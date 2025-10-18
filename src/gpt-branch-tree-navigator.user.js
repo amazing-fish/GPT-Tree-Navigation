@@ -120,6 +120,12 @@
   const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
   const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
   const log = (...a)=>console.debug('[GPT-Tree]', ...a);
+  const logWarn = (...a)=>console.warn('[GPT-Tree]', ...a);
+  const logError = (...a)=>console.error('[GPT-Tree]', ...a);
+  const truncate = (s, len=200)=>{
+    if (!s) return '';
+    return s.length > len ? s.slice(0, len) + '…' : s;
+  };
   const hash = (s) => { let h=0; for (let i=0;i<s.length;i++) h=((h<<5)-h + s.charCodeAt(i))|0; return (h>>>0).toString(36); };
   const normalize = (s)=> (s||'').replace(/\u200b/g,'').replace(/\s+/g,' ').trim();
   const makeSig = (role, text)=> (role||'assistant') + '|' + hash(normalize(text).slice(0, CONFIG.SIG_TEXT_LEN));
@@ -528,6 +534,7 @@
     let patched = false;
     let lastStatus = null;
     let lastText = '';
+    let failureReason = '';
 
     for (const payload of payloads){
       try{
@@ -541,17 +548,23 @@
         log('PATCH branch attempt ->', res.status, 'payload keys=', Object.keys(payload));
         if (!res.ok){
           try{ lastText = await res.text(); }catch(_){ }
+          failureReason = `接口返回 ${res.status}${lastText ? `：${truncate(lastText, 300)}` : ''}`;
           continue;
         }
         patched = true;
         break;
       }catch(err){
+        failureReason = err?.message || String(err);
         log('PATCH error', err);
       }
     }
 
     if (!patched){
+      if (!failureReason){
+        failureReason = lastStatus ? `接口返回 ${lastStatus}${lastText ? `：${truncate(lastText, 300)}` : ''}` : '未知错误';
+      }
       log('branch switch failed – status=', lastStatus, 'body=', lastText);
+      logError('分支切换失败：', failureReason);
       return false;
     }
 
@@ -572,6 +585,7 @@
       if (prefs.forceHardReload){
         location.reload();
       }
+      logWarn('分支切换后刷新新分支失败，可能仍停留在原分支。');
     }
 
     return patched;
