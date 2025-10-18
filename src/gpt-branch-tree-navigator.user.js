@@ -126,6 +126,10 @@
     if (!s) return '';
     return s.length > len ? s.slice(0, len) + '…' : s;
   };
+  const shortId = (id, len=8)=>{
+    if (!id) return '(空)';
+    return id.length > len ? id.slice(0, len) + '…' : id;
+  };
   const hash = (s) => { let h=0; for (let i=0;i<s.length;i++) h=((h<<5)-h + s.charCodeAt(i))|0; return (h>>>0).toString(36); };
   const normalize = (s)=> (s||'').replace(/\u200b/g,'').replace(/\s+/g,' ').trim();
   const makeSig = (role, text)=> (role||'assistant') + '|' + hash(normalize(text).slice(0, CONFIG.SIG_TEXT_LEN));
@@ -358,6 +362,32 @@
     return null;
   }
 
+  function getActiveNodeId(){
+    const raw = LAST_RAW_JSON;
+    if (!raw) return null;
+    return raw.current_node
+      || raw.current_node_id
+      || raw.current_message
+      || raw.current_leaf
+      || raw?.conversation?.current_node
+      || raw?.conversation?.current_message
+      || null;
+  }
+
+  function isActiveBranch(targetId){
+    if (!targetId) return false;
+    const active = getActiveNodeId();
+    if (!active) return false;
+    if (active === targetId) return true;
+    let cur = active;
+    let guard = 0;
+    while (cur && LAST_MAPPING && LAST_MAPPING[cur] && guard++ < 4096){
+      cur = LAST_MAPPING[cur].parent;
+      if (cur === targetId) return true;
+    }
+    return false;
+  }
+
   function harvestLinearNodes(){
     const blocks = $$(CONFIG.SELECTORS.messageBlocks);
     const out = [];
@@ -545,7 +575,7 @@
           body: JSON.stringify(payload)
         });
         lastStatus = res.status;
-        log('PATCH branch attempt ->', res.status, 'payload keys=', Object.keys(payload));
+        log('尝试 PATCH 分支 ->', res.status, 'payload keys=', Object.keys(payload));
         if (!res.ok){
           try{ lastText = await res.text(); }catch(_){ }
           failureReason = `接口返回 ${res.status}${lastText ? `：${truncate(lastText, 300)}` : ''}`;
@@ -563,32 +593,64 @@
       if (!failureReason){
         failureReason = lastStatus ? `接口返回 ${lastStatus}${lastText ? `：${truncate(lastText, 300)}` : ''}` : '未知错误';
       }
-      log('branch switch failed – status=', lastStatus, 'body=', lastText);
+      log('分支切换 PATCH 失败，status=', lastStatus, 'body=', lastText);
       logError('分支切换失败：', failureReason);
       return false;
     }
 
     let refreshed = false;
+    let gotMapping = false;
+    let lastActiveId = null;
+    let hasTargetInMapping = false;
+    let fetchFailedCount = 0;
     for (let i=0;i<CONFIG.BRANCH_REFRESH_RETRIES;i++){
       await sleep(CONFIG.REFRESH_DELAY_MS);
       const mapping = await fetchMapping();
       if (mapping){
+        gotMapping = true;
         LAST_MAPPING = mapping;
         harvestLinearNodes();
-        refreshed = true;
-        break;
+        const activeId = getActiveNodeId();
+        if (activeId) lastActiveId = activeId;
+        if (mapping[targetId]) hasTargetInMapping = true;
+        const activeHit = isActiveBranch(targetId);
+        log('刷新 mapping 第', i + 1, '次 -> 当前节点', shortId(activeId), '命中目标分支=', activeHit);
+        if (activeHit){
+          refreshed = true;
+          break;
+        }
+      }else{
+        fetchFailedCount++;
+        logWarn('刷新 mapping 失败，重试中（第', i + 1, '次）');
       }
     }
 
     if (!refreshed){
       harvestLinearNodes();
+      const parts = [];
+      if (!gotMapping){
+        parts.push('无法从接口获取最新分支信息');
+      }else{
+        if (!hasTargetInMapping){
+          parts.push('刷新后的 mapping 中找不到目标节点');
+        }
+        if (lastActiveId){
+          parts.push(`接口返回的当前节点为 ${shortId(lastActiveId)}`);
+        }
+      }
+      if (fetchFailedCount){
+        parts.push(`有 ${fetchFailedCount} 次刷新请求失败`);
+      }
+      const reason = parts.join('，') || '接口虽返回成功但未能确认分支切换';
+      logError('分支切换后未能确认成功：' + reason);
       if (prefs.forceHardReload){
+        logWarn('已启用强制刷新，页面即将重新载入。');
         location.reload();
       }
-      logWarn('分支切换后刷新新分支失败，可能仍停留在原分支。');
+      return false;
     }
 
-    return patched;
+    return true;
   }
 
   async function reHarvestAndLocate(node){
@@ -602,6 +664,7 @@
       const byText = locateByText(node.text);
       if (byText) return byText;
     }
+    logWarn('未能在页面定位到目标节点，ID=', shortId(node.id), '文本片段=', truncate(node.text, 80));
     return null;
   }
 
