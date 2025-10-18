@@ -26,6 +26,7 @@
     RENDER_IDLE_MS: 12,          // 渲染批次之间的间隔
     OBS_DEBOUNCE_MS: 250,        // DOM 监听防抖
     REFRESH_DELAY_MS: 900,
+    BRANCH_REFRESH_RETRIES: 4,
     SIG_TEXT_LEN: 200,           // 用于签名的前缀长度（文本）
     LOCATE_RETRIES: 5,           // 分支切换后重试定位次数
     LOCATE_RETRY_GAP_MS: 250,    // 每次重试间隔
@@ -509,7 +510,71 @@
   function deepestLeafId(startId){ if (!LAST_MAPPING || !startId) return startId; let cur = startId, lastGood = startId, guard=0; while (guard++ < 4096){ const rec = LAST_MAPPING[cur]; if (!rec || !rec.children || rec.children.length===0) break; const children = rec.children.filter(id=>!!LAST_MAPPING[id]); const kidsWithMsg = children.filter(id=>{ const m = LAST_MAPPING[id]?.message?.content?.parts; const text = nodeText(m); return normalize(text); }); const pickAssistant = (ids)=> ids.find(id => (LAST_MAPPING[id]?.message?.author?.role||'')==='assistant'); let next = pickAssistant(kidsWithMsg) || kidsWithMsg[0] || pickAssistant(children) || children[0]; if (!next) break; lastGood = next; cur = next; } return lastGood; }
 
   async function trySwitchBranch(nodeId){
-    const cid = getConversationId(); if (!cid) return false; await ensureAuth(); const url = CONFIG.ENDPOINTS(cid).patch; const targetId = deepestLeafId(nodeId) || nodeId; try{ const res = await origFetch(url, { method: 'PATCH', credentials: 'include', headers: withAuthHeaders({'content-type':'application/json'}), body: JSON.stringify({ current_node: targetId }) }); log('PATCH current_node ->', res.status, 'target=', targetId); if (!res.ok) return false; await sleep(CONFIG.REFRESH_DELAY_MS); LAST_MAPPING = await fetchMapping(); harvestLinearNodes(); if (!LAST_MAPPING && prefs.forceHardReload){ location.reload(); } return true; }catch(e){ log('PATCH error', e); return false; }
+    const cid = getConversationId();
+    if (!cid) return false;
+
+    await ensureAuth();
+    const url = CONFIG.ENDPOINTS(cid).patch;
+    const targetId = deepestLeafId(nodeId) || nodeId;
+
+    const payloads = [
+      { current_node: targetId },
+      { current_message: targetId },
+      { conversation_id: cid, current_node: targetId },
+      { conversation_id: cid, current_message: targetId },
+      { current_node: { message_id: targetId } }
+    ];
+
+    let patched = false;
+    let lastStatus = null;
+    let lastText = '';
+
+    for (const payload of payloads){
+      try{
+        const res = await origFetch(url, {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: withAuthHeaders({'content-type':'application/json'}),
+          body: JSON.stringify(payload)
+        });
+        lastStatus = res.status;
+        log('PATCH branch attempt ->', res.status, 'payload keys=', Object.keys(payload));
+        if (!res.ok){
+          try{ lastText = await res.text(); }catch(_){ }
+          continue;
+        }
+        patched = true;
+        break;
+      }catch(err){
+        log('PATCH error', err);
+      }
+    }
+
+    if (!patched){
+      log('branch switch failed – status=', lastStatus, 'body=', lastText);
+      return false;
+    }
+
+    let refreshed = false;
+    for (let i=0;i<CONFIG.BRANCH_REFRESH_RETRIES;i++){
+      await sleep(CONFIG.REFRESH_DELAY_MS);
+      const mapping = await fetchMapping();
+      if (mapping){
+        LAST_MAPPING = mapping;
+        harvestLinearNodes();
+        refreshed = true;
+        break;
+      }
+    }
+
+    if (!refreshed){
+      harvestLinearNodes();
+      if (prefs.forceHardReload){
+        location.reload();
+      }
+    }
+
+    return patched;
   }
 
   async function reHarvestAndLocate(node){
