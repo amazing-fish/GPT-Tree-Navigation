@@ -55,6 +55,7 @@
   };
 
   injectStyle(`
+    :root{--gtt-accent:#ff9800}
     #gtt-panel{
       position:fixed;top:64px;right:12px;z-index:999999;width:${CONFIG.PANEL_WIDTH}px;
       max-height:calc(100vh - 84px);display:flex;flex-direction:column;overflow:hidden;
@@ -69,14 +70,18 @@
     #gtt-search{margin:8px 10px;padding:6px 8px;border:1px solid var(--gtt-bd,#d0d7de);border-radius:8px;width:calc(100% - 20px);outline:none;background:var(--gtt-bg,#fff)}
     #gtt-pref{display:flex;gap:10px;align-items:center;padding:0 10px 8px;color:#555;flex-wrap:wrap}
     #gtt-tree{overflow:auto;padding:8px 6px 10px}
-    .gtt-node{padding:6px 6px 6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative}
+    .gtt-node{padding:6px 6px 6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;transition:background .2s ease,border-color .2s ease,box-shadow .2s ease}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
     .gtt-node .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);margin-right:6px;opacity:.75}
     .gtt-node .meta{opacity:.7;font-size:11px;margin-left:6px}
     .gtt-node .pv{display:inline-block;opacity:.9;margin-left:6px;white-space:nowrap;max-width:calc(100% - 90px);overflow:hidden;text-overflow:ellipsis}
-    .gtt-children{margin-left:14px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
+    .gtt-children{margin-left:14px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px;position:relative}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
+    .gtt-node.gtt-node-current{border:1px dashed rgba(255,152,0,.6);background:rgba(255,152,0,.12);box-shadow:0 0 0 1px rgba(255,152,0,.2)}
+    .gtt-node.gtt-node-current::before{content:"";position:absolute;left:-6px;top:50%;transform:translateY(-50%);width:8px;height:8px;border-radius:50%;background:var(--gtt-accent,#ff9800);box-shadow:0 0 0 2px var(--gtt-bg,#fff)}
+    .gtt-node.gtt-node-current .badge{background:rgba(255,152,0,.12);border-color:rgba(255,152,0,.4)}
+    .gtt-children.gtt-current-branch{border-left-color:var(--gtt-accent,#ff9800)}
 
     /* 最小化态：只显示标题栏 */
     #gtt-panel.gtt-min #gtt-body{display:none}
@@ -105,7 +110,7 @@
     #gtt-fab .txt{font-weight:600}
 
     @media (prefers-color-scheme: dark){
-      :root{--gtt-bg:#0b0e14;--gtt-hd:#0f131a;--gtt-bd:#2b3240;color-scheme:dark}
+      :root{--gtt-bg:#0b0e14;--gtt-hd:#0f131a;--gtt-bd:#2b3240;--gtt-accent:#ffb74d;color-scheme:dark}
       #gtt-header .btn,#gtt-modal .btn,#gtt-fab{background:#0b0e14;color:#d1d7e0}
       .gtt-node:hover{background:rgba(120,152,255,.12)}
     }
@@ -399,11 +404,16 @@
     return null;
   }
 
+  let CURRENT_MESSAGE_IDS = new Set();
+  let CURRENT_SIGS = new Set();
+
   function harvestLinearNodes(){
     const blocks = $$(CONFIG.SELECTORS.messageBlocks);
     const out = [];
     DOM_BY_SIG = new Map();
     DOM_BY_ID = new Map();
+    const ids = new Set();
+    const sigs = new Set();
     for (const el of blocks){
       const textEl = $(CONFIG.SELECTORS.messageText, el) || el;
       const raw = (textEl?.innerText || '').trim();
@@ -418,10 +428,21 @@
       out.push(rec);
       DOM_BY_SIG.set(sig, el);
       if (messageId) DOM_BY_ID.set(messageId, el);
+      ids.add(id);
+      sigs.add(sig);
     }
     LAST_LINEAR = out;
+    CURRENT_MESSAGE_IDS = ids;
+    CURRENT_SIGS = sigs;
     return out;
   }
+
+  const isNodeOnCurrentBranch = (node)=>{
+    if (!node) return false;
+    if (node.id && CURRENT_MESSAGE_IDS.has(node.id)) return true;
+    if (node.sig && CURRENT_SIGS.has(node.sig)) return true;
+    return false;
+  };
 
   /** ================= 构树与渲染 ================= **/
   const nodeText = (p)=> Array.isArray(p) ? p.join('\n') : (typeof p==='string' ? p : '');
@@ -515,6 +536,14 @@
         const item = createItem(node);
         parent.appendChild(item);
         stats.total++;
+        if (isNodeOnCurrentBranch(node)){
+          item.classList.add('gtt-node-current');
+          let p = parent;
+          while (p && p instanceof HTMLElement){
+            if (p.classList.contains('gtt-children')) p.classList.add('gtt-current-branch');
+            p = p.parentElement;
+          }
+        }
         if (node.children?.length){
           const kids = document.createElement('div'); kids.className='gtt-children'; parent.appendChild(kids);
           pushList(node.children, kids);
