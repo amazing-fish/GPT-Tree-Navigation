@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.4.1
+// @version      1.4.2
 // @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
@@ -55,6 +55,7 @@
   };
 
   injectStyle(`
+    :root{--gtt-cur:#fa8c16;}
     #gtt-panel{
       position:fixed;top:64px;right:12px;z-index:999999;width:${CONFIG.PANEL_WIDTH}px;
       max-height:calc(100vh - 84px);display:flex;flex-direction:column;overflow:hidden;
@@ -77,6 +78,10 @@
     .gtt-children{margin-left:14px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
+    .gtt-node.gtt-current{background:rgba(250,140,22,.12);border-left:2px solid var(--gtt-cur,#fa8c16);padding-left:10px}
+    .gtt-node.gtt-current .badge{border-color:var(--gtt-cur,#fa8c16);color:var(--gtt-cur,#fa8c16);opacity:1}
+    .gtt-node.gtt-current-leaf{box-shadow:0 0 0 2px rgba(250,140,22,.24) inset}
+    .gtt-children.gtt-current-line{border-left:2px dashed var(--gtt-cur,#fa8c16)}
 
     /* 最小化态：只显示标题栏 */
     #gtt-panel.gtt-min #gtt-body{display:none}
@@ -105,9 +110,10 @@
     #gtt-fab .txt{font-weight:600}
 
     @media (prefers-color-scheme: dark){
-      :root{--gtt-bg:#0b0e14;--gtt-hd:#0f131a;--gtt-bd:#2b3240;color-scheme:dark}
+      :root{--gtt-bg:#0b0e14;--gtt-hd:#0f131a;--gtt-bd:#2b3240;--gtt-cur:#f59b4c;color-scheme:dark}
       #gtt-header .btn,#gtt-modal .btn,#gtt-fab{background:#0b0e14;color:#d1d7e0}
       .gtt-node:hover{background:rgba(120,152,255,.12)}
+      .gtt-node.gtt-current{background:rgba(250,140,22,.18)}
     }
   `);
 
@@ -379,6 +385,10 @@
   let LAST_MAPPING = null, LAST_LINEAR = [], LAST_RAW_JSON = null;
   let DOM_BY_SIG = new Map();  // 签名 -> 元素
   let DOM_BY_ID = new Map();   // messageId -> 元素
+  let CURRENT_BRANCH_IDS = new Set();
+  let CURRENT_BRANCH_SIGS = new Set();
+  let CURRENT_BRANCH_LEAF_ID = null;
+  let CURRENT_BRANCH_LEAF_SIG = null;
   let fetchCtl = { token: 0 };
 
   async function fetchMapping(){
@@ -402,6 +412,8 @@
   function harvestLinearNodes(){
     const blocks = $$(CONFIG.SELECTORS.messageBlocks);
     const out = [];
+    const ids = new Set();
+    const sigs = new Set();
     DOM_BY_SIG = new Map();
     DOM_BY_ID = new Map();
     for (const el of blocks){
@@ -417,9 +429,22 @@
       const rec = {id, role, text, sig, _el: el};
       out.push(rec);
       DOM_BY_SIG.set(sig, el);
+      ids.add(id);
+      sigs.add(sig);
       if (messageId) DOM_BY_ID.set(messageId, el);
     }
     LAST_LINEAR = out;
+    CURRENT_BRANCH_IDS = ids;
+    CURRENT_BRANCH_SIGS = sigs;
+    if (out.length){
+      const leaf = out[out.length - 1];
+      CURRENT_BRANCH_LEAF_ID = leaf?.id || null;
+      CURRENT_BRANCH_LEAF_SIG = leaf?.sig || null;
+    }else{
+      CURRENT_BRANCH_LEAF_ID = null;
+      CURRENT_BRANCH_LEAF_SIG = null;
+    }
+    applyCurrentBranchHighlight();
     return out;
   }
 
@@ -448,22 +473,47 @@
     const roots = visibleIds.filter(id => parentMap.get(id) == null);
 
     function foldSameRoleChain(startId){
-      let cur = startId; let rec = byId[cur]; let role = rec?.message?.author?.role || 'assistant'; let text = getRecText(rec); let guard = 0;
-      while (guard++ < 4096){
+      let cur = startId;
+      let rec = byId[cur];
+      const role = rec?.message?.author?.role || 'assistant';
+      let text = getRecText(rec);
+      let guard = 0;
+      const chainIds = [];
+      const chainSigs = [];
+      while (rec && guard++ < 4096){
+        const curText = getRecText(rec);
+        if (curText){
+          chainIds.push(cur);
+          chainSigs.push(makeSig(role, curText));
+        }
         const kids = childrenMap.get(cur) || [];
         if (kids.length !== 1) break;
-        const k = kids[0]; const kRec = byId[k]; const kRole = kRec?.message?.author?.role || 'assistant'; const kText = getRecText(kRec);
-        if (kRole === role && kText && text){ text = (text + '\n' + kText).trim(); cur = k; } else { break; }
+        const k = kids[0];
+        const kRec = byId[k];
+        const kRole = kRec?.message?.author?.role || 'assistant';
+        const kText = getRecText(kRec);
+        if (kRole === role && kText && text){
+          text = (text + '\n' + kText).trim();
+          cur = k;
+          rec = kRec;
+          continue;
+        }
+        break;
       }
-      return { id: cur, role, text };
+      return { id: cur, role, text, ids: chainIds, sigs: chainSigs };
     }
 
     const toNode = (id) => {
-      const folded = foldSameRoleChain(id); const curId = folded.id; const curRole = folded.role; const curText = folded.text;
+      const folded = foldSameRoleChain(id);
+      const curId = folded.id;
+      const curRole = folded.role;
+      const curText = folded.text;
       const kidIds = childrenMap.get(curId) || [];
       const childrenNodes = kidIds.map(toNode).filter(Boolean);
       const sig = makeSig(curRole, curText);
-      return { id: curId, role: curRole, text: curText, sig, children: childrenNodes };
+      const chainIds = (folded.ids && folded.ids.length) ? folded.ids : [curId];
+      const chainSigs = (folded.sigs && folded.sigs.length) ? folded.sigs : [sig];
+      return { id: curId, role: curRole, text: curText, sig, chainIds, chainSigs, children: childrenNodes };
     };
 
     const tree = roots.map(toNode).filter(Boolean);
@@ -493,6 +543,8 @@
 
     const createItem = (node)=>{
       const item = document.createElement('div'); item.className = 'gtt-node'; item.dataset.nodeId = node.id; item.dataset.sig = node.sig; item.title = node.id + '\n\n' + (node.text||'');
+      if (node.chainIds) item._chainIds = node.chainIds;
+      if (node.chainSigs) item._chainSigs = node.chainSigs;
       const badge = document.createElement('span'); badge.className='badge'; badge.textContent = node.role==='user'? 'U' : (node.role||'·');
       const title = document.createElement('span'); title.textContent = node.role==='user' ? '用户' : '助手';
       const meta = document.createElement('span'); meta.className='meta'; meta.textContent = node.children?.length ? `(${node.children.length})` : '';
@@ -521,9 +573,47 @@
         }
         cnt++;
       }
-      if (queue.length){ rafIdle(step); } else { targetEl.appendChild(container); updateStats(stats.total); }
+      if (queue.length){ rafIdle(step); } else { targetEl.appendChild(container); updateStats(stats.total); applyCurrentBranchHighlight(targetEl); }
     };
     step();
+  }
+
+  function applyCurrentBranchHighlight(rootEl){
+    const treeRoot = rootEl || $('#gtt-tree');
+    if (!treeRoot) return;
+
+    const nodeEls = treeRoot.querySelectorAll('.gtt-node');
+    const connectorEls = treeRoot.querySelectorAll('.gtt-children');
+    nodeEls.forEach(el => { el.classList.remove('gtt-current', 'gtt-current-leaf'); });
+    connectorEls.forEach(el => el.classList.remove('gtt-current-line'));
+
+    const hasBranch = (CURRENT_BRANCH_IDS?.size || 0) > 0 || (CURRENT_BRANCH_SIGS?.size || 0) > 0;
+    if (!hasBranch) return;
+
+    nodeEls.forEach(el => {
+      const id = el.dataset?.nodeId;
+      const sig = el.dataset?.sig;
+      const chainIds = Array.isArray(el._chainIds) ? el._chainIds : null;
+      const chainSigs = Array.isArray(el._chainSigs) ? el._chainSigs : null;
+      const matchesId = id && CURRENT_BRANCH_IDS.has(id);
+      const matchesSig = sig && CURRENT_BRANCH_SIGS.has(sig);
+      const matchesChainId = chainIds ? chainIds.some(cid => CURRENT_BRANCH_IDS.has(cid)) : false;
+      const matchesChainSig = chainSigs ? chainSigs.some(cs => CURRENT_BRANCH_SIGS.has(cs)) : false;
+      const isCurrent = matchesId || matchesSig || matchesChainId || matchesChainSig;
+      if (!isCurrent) return;
+      el.classList.add('gtt-current');
+      const isLeaf = (
+        (CURRENT_BRANCH_LEAF_ID && (id === CURRENT_BRANCH_LEAF_ID || (chainIds && chainIds.includes(CURRENT_BRANCH_LEAF_ID)))) ||
+        (CURRENT_BRANCH_LEAF_SIG && (sig === CURRENT_BRANCH_LEAF_SIG || (chainSigs && chainSigs.includes(CURRENT_BRANCH_LEAF_SIG))))
+      );
+      if (isLeaf){
+        el.classList.add('gtt-current-leaf');
+      }
+      const parent = el.parentElement;
+      if (parent?.classList?.contains('gtt-children')){
+        parent.classList.add('gtt-current-line');
+      }
+    });
   }
 
   function updateStats(total){ const el = $('#gtt-stats'); if (el) el.textContent = total ? `节点：${total}` : ''; }
