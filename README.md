@@ -2,6 +2,9 @@
 
 本仓库收录 Tampermonkey 用户脚本 **GPT Branch Tree Navigator**，用于在 ChatGPT 对话页面中以树形结构浏览历史分支并快速定位消息。
 
+## 最新更新
+- **v1.4.1**：预览模态支持保留原始换行并渲染基础 Markdown（标题、列表、代码块、强调等），阅读体验更接近对话区展示。
+
 ## 仓库结构
 - `src/gpt-branch-tree-navigator.user.js`：主脚本源码。
 - `docs/优化建议.md`：针对当前实现的优化建议与改进方向。
