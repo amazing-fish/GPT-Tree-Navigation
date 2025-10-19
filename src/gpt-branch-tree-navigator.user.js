@@ -531,7 +531,20 @@
   function toggleCollapseAll(){ $$('.gtt-children').forEach(el=>el.classList.toggle('gtt-hidden')); }
 
   /** ================= 跳转 ================= **/
-  function scrollToEl(el){ const offset = el.getBoundingClientRect().top + window.scrollY - CONFIG.SCROLL_OFFSET; window.scrollTo({top: offset, behavior:'smooth'}); el.classList.add('gtt-highlight'); setTimeout(()=>el.classList.remove('gtt-highlight'), CONFIG.HIGHLIGHT_MS); }
+  function scrollToEl(el){
+    const root = document.querySelector(CONFIG.SELECTORS.scrollRoot);
+    const rect = el.getBoundingClientRect();
+    if (root && root !== document.body && root !== document.documentElement){
+      const rootRect = root.getBoundingClientRect();
+      const offset = root.scrollTop + (rect.top - rootRect.top) - CONFIG.SCROLL_OFFSET;
+      root.scrollTo({ top: offset, behavior: 'smooth' });
+    }else{
+      const offset = rect.top + window.scrollY - CONFIG.SCROLL_OFFSET;
+      window.scrollTo({ top: offset, behavior: 'smooth' });
+    }
+    el.classList.add('gtt-highlight');
+    setTimeout(()=>el.classList.remove('gtt-highlight'), CONFIG.HIGHLIGHT_MS);
+  }
 
   function locateByText(text){
     const snippet = normalize(text).slice(0,120);
