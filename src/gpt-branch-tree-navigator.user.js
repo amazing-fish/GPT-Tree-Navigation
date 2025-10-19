@@ -531,7 +531,40 @@
   function toggleCollapseAll(){ $$('.gtt-children').forEach(el=>el.classList.toggle('gtt-hidden')); }
 
   /** ================= 跳转 ================= **/
-  function scrollToEl(el){ const offset = el.getBoundingClientRect().top + window.scrollY - CONFIG.SCROLL_OFFSET; window.scrollTo({top: offset, behavior:'smooth'}); el.classList.add('gtt-highlight'); setTimeout(()=>el.classList.remove('gtt-highlight'), CONFIG.HIGHLIGHT_MS); }
+  const SCROLLABLE_VALUES = new Set(['auto','scroll','overlay']);
+  function findScrollContainer(el){
+    const rootSel = CONFIG.SELECTORS?.scrollRoot;
+    if (rootSel){
+      const root = document.querySelector(rootSel);
+      if (root && root.contains(el) && root.scrollHeight > root.clientHeight + 8){
+        return root;
+      }
+    }
+    let cur = el.parentElement;
+    while (cur && cur !== document.body){
+      const style = getComputedStyle(cur);
+      if ((SCROLLABLE_VALUES.has(style.overflowY) || SCROLLABLE_VALUES.has(style.overflow)) && cur.scrollHeight > cur.clientHeight + 8){
+        return cur;
+      }
+      cur = cur.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  function scrollToEl(el){
+    const container = findScrollContainer(el);
+    if (container && container !== document.body && container !== document.documentElement){
+      const rect = el.getBoundingClientRect();
+      const parentRect = container.getBoundingClientRect();
+      const offset = rect.top - parentRect.top + container.scrollTop - CONFIG.SCROLL_OFFSET;
+      container.scrollTo({ top: offset, behavior: 'smooth' });
+    }else{
+      const offset = el.getBoundingClientRect().top + window.scrollY - CONFIG.SCROLL_OFFSET;
+      window.scrollTo({ top: offset, behavior:'smooth' });
+    }
+    el.classList.add('gtt-highlight');
+    setTimeout(()=>el.classList.remove('gtt-highlight'), CONFIG.HIGHLIGHT_MS);
+  }
 
   function locateByText(text){
     const snippet = normalize(text).slice(0,120);
