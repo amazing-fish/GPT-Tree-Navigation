@@ -69,12 +69,24 @@
     #gtt-search{margin:8px 10px;padding:6px 8px;border:1px solid var(--gtt-bd,#d0d7de);border-radius:8px;width:calc(100% - 20px);outline:none;background:var(--gtt-bg,#fff)}
     #gtt-pref{display:flex;gap:10px;align-items:center;padding:0 10px 8px;color:#555;flex-wrap:wrap}
     #gtt-tree{overflow:auto;padding:8px 6px 10px}
+    #gtt-tree.gtt-view-tree{padding:14px 12px 18px}
+    .gtt-item{position:relative}
     .gtt-node{padding:6px 6px 6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
     .gtt-node .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);margin-right:6px;opacity:.75}
     .gtt-node .meta{opacity:.7;font-size:11px;margin-left:6px}
     .gtt-node .pv{display:inline-block;opacity:.9;margin-left:6px;white-space:nowrap;max-width:calc(100% - 90px);overflow:hidden;text-overflow:ellipsis}
-    .gtt-children{margin-left:14px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
+    #gtt-tree.gtt-view-indent .gtt-children{margin-left:14px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
+    #gtt-tree.gtt-view-tree .gtt-item{display:flex;flex-direction:column;align-items:center;margin:8px 12px}
+    #gtt-tree.gtt-view-tree .gtt-node{margin:0;padding:8px 12px;min-width:160px;text-align:center}
+    #gtt-tree.gtt-view-tree .gtt-children{margin:14px 0 0;border-left:none;padding:24px 0 0;display:flex;flex-wrap:wrap;justify-content:center;gap:18px;position:relative}
+    #gtt-tree.gtt-view-tree .gtt-children::before{content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);width:2px;height:18px;background:var(--gtt-bd,#d0d7de);opacity:.6}
+    #gtt-tree.gtt-view-tree .gtt-children::after{content:'';position:absolute;top:0;left:18px;right:18px;height:2px;background:var(--gtt-bd,#d0d7de);opacity:.45}
+    #gtt-tree.gtt-view-tree .gtt-children[data-count="1"]::after{display:none}
+    #gtt-tree.gtt-view-tree .gtt-children:empty::before{display:none}
+    #gtt-tree.gtt-view-tree .gtt-children:empty::after{display:none}
+    #gtt-tree.gtt-view-tree .gtt-children > .gtt-item{position:relative;padding-top:18px;margin:0 6px}
+    #gtt-tree.gtt-view-tree .gtt-children > .gtt-item::before{content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);width:2px;height:18px;background:var(--gtt-bd,#d0d7de);opacity:.6}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
 
@@ -119,7 +131,8 @@
   const defaults = {
     minimized: false,
     hidden: false,
-    pos: null // {left, top} 若为 null 使用默认 right 固定
+    pos: null, // {left, top} 若为 null 使用默认 right 固定
+    viewMode: 'indent'
   };
   let prefs = loadPrefs();
 
@@ -191,6 +204,7 @@
         <div class="title" id="gtt-drag">GPT Tree</div>
         <button class="btn" id="gtt-btn-min" title="最小化/还原（Alt+M）">最小化</button>
         <button class="btn" id="gtt-btn-refresh">刷新</button>
+        <button class="btn" id="gtt-btn-view" title="切换视图模式">树模式</button>
         <button class="btn" id="gtt-btn-collapse">折叠</button>
         <button class="btn" id="gtt-btn-hide" title="隐藏（Alt+T）">隐藏</button>
       </div>
@@ -218,13 +232,21 @@
     $('#gtt-btn-min').addEventListener('click', ()=> setMinimized(!prefs.minimized));
     $('#gtt-btn-hide').addEventListener('click', ()=> setHidden(true));
     $('#gtt-btn-refresh').addEventListener('click', ()=>rebuildTree({forceFetch:true, hard:true}));
+    $('#gtt-btn-view').addEventListener('click', ()=>{
+      const next = prefs.viewMode === 'tree' ? 'indent' : 'tree';
+      setViewMode(next);
+    });
     $('#gtt-btn-collapse').addEventListener('click', toggleCollapseAll);
     $('#gtt-md-close').addEventListener('click', closeModal);
 
     const inputSearch = $('#gtt-search');
     const onSearch = debounce((e)=>{
       const q = (typeof e==='string'? e : (e?.target?.value||'')).trim().toLowerCase();
-      $$('#gtt-tree .gtt-node').forEach(n=>{ n.style.display = n.textContent.toLowerCase().includes(q) ? '' : 'none'; });
+      $$('#gtt-tree .gtt-node').forEach(n=>{
+        const hit = n.textContent.toLowerCase().includes(q);
+        const wrap = n.closest('.gtt-item') || n;
+        wrap.style.display = hit ? '' : 'none';
+      });
     }, 120);
     inputSearch.addEventListener('input', onSearch);
 
@@ -253,6 +275,7 @@
     // 应用最小化/隐藏/位置状态
     setMinimized(prefs.minimized, /*silent*/true);
     setHidden(prefs.hidden, /*silent*/true);
+    setViewMode(prefs.viewMode, /*silent*/true);
     applyPositionFromPrefs();
   }
 
@@ -290,6 +313,21 @@
     panel.classList.toggle('gtt-min', !!v);
     $('#gtt-btn-min').textContent = v ? '还原' : '最小化';
     prefs.minimized = !!v; if (!silent) savePrefs();
+  }
+
+  function setViewMode(mode, silent=false){
+    const tree = $('#gtt-tree');
+    const btn = $('#gtt-btn-view');
+    const normalized = mode === 'tree' ? 'tree' : 'indent';
+    if (tree){
+      tree.classList.toggle('gtt-view-tree', normalized === 'tree');
+      tree.classList.toggle('gtt-view-indent', normalized === 'indent');
+    }
+    if (btn){
+      btn.textContent = normalized === 'tree' ? '缩进模式' : '树模式';
+    }
+    prefs.viewMode = normalized;
+    if (!silent) savePrefs();
   }
 
   /** ================= 数据：mapping / 线性回退 ================= **/
@@ -409,13 +447,15 @@
     const pushList = (nodes, parent)=>{ for (const n of nodes){ queue.push({ node:n, parent }); } };
 
     const createItem = (node)=>{
+      const wrap = document.createElement('div'); wrap.className = 'gtt-item';
       const item = document.createElement('div'); item.className = 'gtt-node'; item.dataset.nodeId = node.id; item.dataset.sig = node.sig; item.title = node.id + '\n\n' + (node.text||'');
       const badge = document.createElement('span'); badge.className='badge'; badge.textContent = node.role==='user'? 'U' : (node.role||'·');
       const title = document.createElement('span'); title.textContent = node.role==='user' ? '用户' : '助手';
       const meta = document.createElement('span'); meta.className='meta'; meta.textContent = node.children?.length ? `(${node.children.length})` : '';
       const pv = document.createElement('span'); pv.className='pv'; pv.textContent = preview(node.text);
       item.append(badge,title,meta,pv); item.addEventListener('click', ()=>jumpTo(node));
-      return item;
+      wrap.appendChild(item);
+      return wrap;
     };
 
     // 根容器
@@ -429,16 +469,21 @@
       let cnt = 0;
       while (cnt < CONFIG.RENDER_CHUNK && queue.length){
         const { node, parent } = queue.shift();
-        const item = createItem(node);
-        parent.appendChild(item);
+        const wrap = createItem(node);
+        parent.appendChild(wrap);
         stats.total++;
         if (node.children?.length){
-          const kids = document.createElement('div'); kids.className='gtt-children'; parent.appendChild(kids);
+          const kids = document.createElement('div'); kids.className='gtt-children'; kids.dataset.count = String(node.children.length);
+          wrap.appendChild(kids);
           pushList(node.children, kids);
         }
         cnt++;
       }
-      if (queue.length){ rafIdle(step); } else { targetEl.appendChild(container); updateStats(stats.total); }
+      if (queue.length){ rafIdle(step); } else {
+        targetEl.appendChild(container);
+        setViewMode(prefs.viewMode, /*silent*/true);
+        updateStats(stats.total);
+      }
     };
     step();
   }
@@ -448,7 +493,39 @@
   function toggleCollapseAll(){ $$('.gtt-children').forEach(el=>el.classList.toggle('gtt-hidden')); }
 
   /** ================= 跳转 ================= **/
-  function scrollToEl(el){ const offset = el.getBoundingClientRect().top + window.scrollY - CONFIG.SCROLL_OFFSET; window.scrollTo({top: offset, behavior:'smooth'}); el.classList.add('gtt-highlight'); setTimeout(()=>el.classList.remove('gtt-highlight'), CONFIG.HIGHLIGHT_MS); }
+  function getScrollRoot(){
+    const sel = CONFIG.SELECTORS.scrollRoot;
+    if (sel){
+      const root = $(sel);
+      if (root && typeof root.scrollTo === 'function'){ return root; }
+    }
+    return window;
+  }
+
+  function highlightNode(el){
+    el.classList.add('gtt-highlight');
+    setTimeout(()=>el.classList.remove('gtt-highlight'), CONFIG.HIGHLIGHT_MS);
+  }
+
+  function scrollToEl(el){
+    if (!el) return;
+    const root = getScrollRoot();
+    if (root && root !== window && root !== document && root !== document.body && root !== document.documentElement && root.contains(el)){
+      try{
+        const rootRect = root.getBoundingClientRect();
+        const rect = el.getBoundingClientRect();
+        const offset = rect.top - rootRect.top + root.scrollTop - CONFIG.SCROLL_OFFSET;
+        root.scrollTo({ top: Math.max(0, offset), behavior: 'smooth' });
+      }catch(_){
+        const offset = el.getBoundingClientRect().top + window.scrollY - CONFIG.SCROLL_OFFSET;
+        window.scrollTo({ top: Math.max(0, offset), behavior: 'smooth' });
+      }
+    }else{
+      const offset = el.getBoundingClientRect().top + window.scrollY - CONFIG.SCROLL_OFFSET;
+      window.scrollTo({ top: Math.max(0, offset), behavior: 'smooth' });
+    }
+    highlightNode(el);
+  }
 
   function locateByText(text){
     const snippet = normalize(text).slice(0,120);
