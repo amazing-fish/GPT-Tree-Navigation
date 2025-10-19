@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         GPT Branch Tree Navigator (Preview + Jump + Branch Switch) – TEST
+// @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.3.1
-// @description  树状分支 + 预览 + 一键跳转；跨分支自动切换（带鉴权）；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；防抖监听；分支切换失败内嵌提示；修复：当前分支已渲染却被误判为“未在该分支”。
+// @version      1.4.1
+// @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
 // @match        https://chatgpt.com/*
@@ -19,16 +19,11 @@
     PREVIEW_MAX_CHARS: 200,
     HIGHLIGHT_MS: 1400,
     SCROLL_OFFSET: 80,
-    AUTO_BRANCH_SWITCH_DEFAULT: true,
-    FORCE_HARD_RELOAD_DEFAULT: false,
     LS_KEY: 'gtt_prefs_v3',
     RENDER_CHUNK: 120,           // 每批渲染多少个节点，避免长树卡顿
     RENDER_IDLE_MS: 12,          // 渲染批次之间的间隔
     OBS_DEBOUNCE_MS: 250,        // DOM 监听防抖
-    REFRESH_DELAY_MS: 900,
     SIG_TEXT_LEN: 200,           // 用于签名的前缀长度（文本）
-    LOCATE_RETRIES: 5,           // 分支切换后重试定位次数
-    LOCATE_RETRY_GAP_MS: 250,    // 每次重试间隔
     SELECTORS: {
       scrollRoot: 'main',
       messageBlocks: [
@@ -48,8 +43,7 @@
       get: [
         `/backend-api/conversation/${cid}`,
         `/backend-api/conversation/${cid}/`,
-      ],
-      patch: `/backend-api/conversation/${cid}`
+      ]
     })
   };
 
@@ -91,7 +85,14 @@
     #gtt-modal{position:fixed;inset:0;z-index:1000000;background:rgba(0,0,0,.42);display:none;align-items:center;justify-content:center}
     #gtt-modal .card{max-width:880px;max-height:80vh;overflow:auto;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25)}
     #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa)}
-    #gtt-modal .bd{padding:12px 16px;white-space:pre-wrap;font-size:14px;line-height:1.6}
+    #gtt-modal .bd{padding:12px 16px;font-size:14px;line-height:1.65;overflow-x:auto}
+    #gtt-modal .bd p{margin:0 0 10px}
+    #gtt-modal .bd h1,#gtt-modal .bd h2,#gtt-modal .bd h3,#gtt-modal .bd h4,#gtt-modal .bd h5,#gtt-modal .bd h6{margin:18px 0 10px;font-weight:600}
+    #gtt-modal .bd pre{background:rgba(99,110,123,.08);padding:10px 12px;border-radius:8px;margin:12px 0;font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:13px;line-height:1.55;white-space:pre;overflow:auto}
+    #gtt-modal .bd code{background:rgba(99,110,123,.2);padding:1px 4px;border-radius:4px;font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:13px}
+    #gtt-modal .bd pre code{background:transparent;padding:0}
+    #gtt-modal .bd ul{margin:0 0 12px 18px;padding:0 0 0 12px}
+    #gtt-modal .bd li{margin:4px 0}
     #gtt-modal .btn{border:1px solid var(--gtt-bd,#d0d7de);background:#fff;cursor:pointer;padding:4px 8px;border-radius:8px;font-size:12px}
 
     /* 悬浮恢复按钮（隐藏后出现） */
@@ -103,10 +104,6 @@
     #gtt-fab .dot{width:8px;height:8px;border-radius:50%;background:#5865f2}
     #gtt-fab .txt{font-weight:600}
 
-    /* 内嵌提示条 */
-    #gtt-toast{position:fixed;right:16px;bottom:80px;z-index:1000001;display:none}
-    #gtt-toast .msg{background:rgba(31,41,55,.96);color:#e5e7eb;padding:8px 12px;border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.18)}
-
     @media (prefers-color-scheme: dark){
       :root{--gtt-bg:#0b0e14;--gtt-hd:#0f131a;--gtt-bd:#2b3240;color-scheme:dark}
       #gtt-header .btn,#gtt-modal .btn,#gtt-fab{background:#0b0e14;color:#d1d7e0}
@@ -117,10 +114,85 @@
   /** ================= 工具 ================= **/
   const $ = (s, r=document) => r.querySelector(s);
   const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
-  const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
   const log = (...a)=>console.debug('[GPT-Tree]', ...a);
   const hash = (s) => { let h=0; for (let i=0;i<s.length;i++) h=((h<<5)-h + s.charCodeAt(i))|0; return (h>>>0).toString(36); };
   const normalize = (s)=> (s||'').replace(/\u200b/g,'').replace(/\s+/g,' ').trim();
+  const normalizeForPreview = (s)=> (s||'').replace(/\u200b/g,'').replace(/\r\n?/g,'\n');
+  const HTML_ESC = { "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;" };
+  const escapeHtml = (str='')=> str.replace(/[&<>'"]/g, (ch)=> HTML_ESC[ch] || ch);
+  const escapeAttr = (str='')=> escapeHtml(str).replace(/`/g,'&#96;');
+  const formatInline = (txt='')=>{
+    let out = escapeHtml(txt);
+    out = out.replace(/`([^`]+)`/g, (_m, code)=>`<code>${code}</code>`);
+    out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url)=>`<a href="${escapeAttr(url)}" target="_blank" rel="noreferrer noopener">${label}</a>`);
+    const codeHolders = [];
+    out = out.replace(/<code>[^<]*<\/code>/g, (match)=>{ codeHolders.push(match); return `\uFFF0${codeHolders.length-1}\uFFF1`; });
+    out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    out = out.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+    out = out.replace(/(\s|^)\*([^*\n]+)\*(?=\s|[\.,!?:;\)\]\}“”"'`]|$)/g, (_m, pre, body)=> `${pre}<em>${body}</em>`);
+    out = out.replace(/(\s|^)_(?!_)([^_\n]+)_(?=\s|[\.,!?:;\)\]\}“”"'`]|$)/g, (_m, pre, body)=> `${pre}<em>${body}</em>`);
+    out = out.replace(/\uFFF0(\d+)\uFFF1/g, (_m, idx)=> codeHolders[Number(idx)]);
+    return out;
+  };
+  const renderMarkdownLite = (raw='')=>{
+    const text = normalizeForPreview(raw || '').trimEnd();
+    if (!text) return '<p>(空)</p>';
+    const lines = text.split('\n');
+    let html = '';
+    let inList = false;
+    let codeBuffer = null;
+    let codeLang = '';
+    const flushList = ()=>{ if (inList){ html += '</ul>'; inList = false; } };
+    const flushCode = ()=>{
+      if (codeBuffer){
+        const cls = codeLang ? ` class="lang-${escapeAttr(codeLang)}"` : '';
+        const body = codeBuffer.map(escapeHtml).join('\n');
+        html += `<pre><code${cls}>${body}</code></pre>`;
+        codeBuffer = null;
+        codeLang = '';
+      }
+    };
+    for (const line of lines){
+      const trimmed = line.trim();
+      if (/^```/.test(trimmed)){
+        if (codeBuffer){
+          flushCode();
+        }else{
+          flushList();
+          codeBuffer = [];
+          codeLang = trimmed.slice(3).trim();
+        }
+        continue;
+      }
+      if (codeBuffer){
+        codeBuffer.push(line);
+        continue;
+      }
+      if (!trimmed){
+        flushList();
+        html += '<br>';
+        continue;
+      }
+      const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
+      if (heading){
+        flushList();
+        const level = heading[1].length;
+        html += `<h${level}>${formatInline(heading[2])}</h${level}>`;
+        continue;
+      }
+      const listItem = line.match(/^\s*[-*+]\s+(.*)$/);
+      if (listItem){
+        if (!inList){ html += '<ul>'; inList = true; }
+        html += `<li>${formatInline(listItem[1])}</li>`;
+        continue;
+      }
+      flushList();
+      html += `<p>${formatInline(line)}</p>`;
+    }
+    flushCode();
+    flushList();
+    return html;
+  };
   const makeSig = (role, text)=> (role||'assistant') + '|' + hash(normalize(text).slice(0, CONFIG.SIG_TEXT_LEN));
   const getConversationId = () => (location.pathname.match(/\/c\/([a-z0-9-]{10,})/i)||[])[1]||null;
   const rafIdle = (fn, ms=CONFIG.RENDER_IDLE_MS) => setTimeout(fn, ms);
@@ -128,8 +200,6 @@
 
   /** ================= 状态持久化 ================= **/
   const defaults = {
-    autoBranchSwitch: CONFIG.AUTO_BRANCH_SWITCH_DEFAULT,
-    forceHardReload: CONFIG.FORCE_HARD_RELOAD_DEFAULT,
     minimized: false,
     hidden: false,
     pos: null // {left, top} 若为 null 使用默认 right 固定
@@ -185,7 +255,7 @@
   }
   const withAuthHeaders = (extra={}) => ({ ...(LAST_AUTH||{}), ...extra });
 
-  /** ================= 面板 + FAB + Toast ================= **/
+  /** ================= 面板 + FAB ================= **/
   function ensureFab(){
     if ($('#gtt-fab')) return;
     const fab = document.createElement('div');
@@ -193,21 +263,6 @@
     fab.innerHTML = `<span class="dot"></span><span class="txt">GPT Tree</span>`;
     fab.addEventListener('click', ()=> setHidden(false));
     document.body.appendChild(fab);
-  }
-
-  function ensureToast(){
-    if ($('#gtt-toast')) return;
-    const t = document.createElement('div');
-    t.id = 'gtt-toast';
-    t.innerHTML = `<div class="msg" id="gtt-toast-msg"></div>`;
-    document.body.appendChild(t);
-  }
-  function toast(txt, ms=2200){
-    ensureToast();
-    const el = $('#gtt-toast'); const msg = $('#gtt-toast-msg');
-    msg.textContent = txt || '';
-    el.style.display='block';
-    clearTimeout(toast._t); toast._t=setTimeout(()=>{ el.style.display='none'; }, ms);
   }
 
   function ensurePanel(){
@@ -225,8 +280,6 @@
       <div id="gtt-body">
         <input id="gtt-search" placeholder="搜索节点（文本/角色）… / 聚焦，Esc 清除">
         <div id="gtt-pref">
-          <label><input type="checkbox" id="gtt-auto"> 允许切换分支</label>
-          <label><input type="checkbox" id="gtt-hard"> 切分支后硬刷新兜底</label>
           <button class="btn" id="gtt-btn-openjson" title="调试：在新标签打开 mapping">调试</button>
           <span style="opacity:.65" id="gtt-stats"></span>
         </div>
@@ -266,11 +319,6 @@
     });
 
     // 初始化偏好
-    $('#gtt-auto').checked = prefs.autoBranchSwitch;
-    $('#gtt-hard').checked = prefs.forceHardReload;
-    $('#gtt-auto').addEventListener('change', e=>{ prefs.autoBranchSwitch = e.target.checked; savePrefs(); });
-    $('#gtt-hard').addEventListener('change', e=>{ prefs.forceHardReload = e.target.checked; savePrefs(); });
-
     // 双击标题栏=最小化/还原
     $('#gtt-header').addEventListener('dblclick', ()=> setMinimized(!prefs.minimized));
 
@@ -482,7 +530,7 @@
 
   function toggleCollapseAll(){ $$('.gtt-children').forEach(el=>el.classList.toggle('gtt-hidden')); }
 
-  /** ================= 跳转 & 分支切换 ================= **/
+  /** ================= 跳转 ================= **/
   function scrollToEl(el){ const offset = el.getBoundingClientRect().top + window.scrollY - CONFIG.SCROLL_OFFSET; window.scrollTo({top: offset, behavior:'smooth'}); el.classList.add('gtt-highlight'); setTimeout(()=>el.classList.remove('gtt-highlight'), CONFIG.HIGHLIGHT_MS); }
 
   function locateByText(text){
@@ -500,31 +548,11 @@
   }
 
   function openModal(text, reason){
-    $('#gtt-md-body').textContent = normalize(text) || '(空)';
+    $('#gtt-md-body').innerHTML = renderMarkdownLite(text);
     $('#gtt-md-title').textContent = reason || '节点预览（未能定位到页面元素，已为你展示文本）';
     $('#gtt-modal').style.display = 'flex';
   }
-  function closeModal(){ $('#gtt-modal').style.display='none'; $('#gtt-md-body').textContent=''; }
-
-  function deepestLeafId(startId){ if (!LAST_MAPPING || !startId) return startId; let cur = startId, lastGood = startId, guard=0; while (guard++ < 4096){ const rec = LAST_MAPPING[cur]; if (!rec || !rec.children || rec.children.length===0) break; const children = rec.children.filter(id=>!!LAST_MAPPING[id]); const kidsWithMsg = children.filter(id=>{ const m = LAST_MAPPING[id]?.message?.content?.parts; const text = nodeText(m); return normalize(text); }); const pickAssistant = (ids)=> ids.find(id => (LAST_MAPPING[id]?.message?.author?.role||'')==='assistant'); let next = pickAssistant(kidsWithMsg) || kidsWithMsg[0] || pickAssistant(children) || children[0]; if (!next) break; lastGood = next; cur = next; } return lastGood; }
-
-  async function trySwitchBranch(nodeId){
-    const cid = getConversationId(); if (!cid) return false; await ensureAuth(); const url = CONFIG.ENDPOINTS(cid).patch; const targetId = deepestLeafId(nodeId) || nodeId; try{ const res = await origFetch(url, { method: 'PATCH', credentials: 'include', headers: withAuthHeaders({'content-type':'application/json'}), body: JSON.stringify({ current_node: targetId }) }); log('PATCH current_node ->', res.status, 'target=', targetId); if (!res.ok) return false; await sleep(CONFIG.REFRESH_DELAY_MS); LAST_MAPPING = await fetchMapping(); harvestLinearNodes(); if (!LAST_MAPPING && prefs.forceHardReload){ location.reload(); } return true; }catch(e){ log('PATCH error', e); return false; }
-  }
-
-  async function reHarvestAndLocate(node){
-    for (let i=0;i<CONFIG.LOCATE_RETRIES;i++){
-      await sleep(CONFIG.LOCATE_RETRY_GAP_MS);
-      harvestLinearNodes();
-      const byId = DOM_BY_ID.get(node.id);
-      if (byId && byId.isConnected) return byId;
-      const bySig = DOM_BY_SIG.get(node.sig || makeSig(node.role, node.text));
-      if (bySig && bySig.isConnected) return bySig;
-      const byText = locateByText(node.text);
-      if (byText) return byText;
-    }
-    return null;
-  }
+  function closeModal(){ $('#gtt-modal').style.display='none'; $('#gtt-md-body').innerHTML=''; }
 
   async function jumpTo(node){
     // 1) 直接用 messageId 命中
@@ -540,21 +568,7 @@
     target = locateByText(node.text);
     if (target) return scrollToEl(target);
 
-    // 4) 尝试切换分支后再定位
-    if (prefs.autoBranchSwitch && LAST_MAPPING && node.id && !String(node.id).startsWith('lin-')){
-      const ok = await trySwitchBranch(node.id);
-      if (ok){
-        const tgt = await reHarvestAndLocate(node);
-        if (tgt) return scrollToEl(tgt);
-        if (prefs.forceHardReload) return; // 交给硬刷新
-      }
-      // 分支切换失败或未找到
-      openModal(node.text || '(无文本)', '节点预览（分支切换未成功或定位失败，已为你展示文本）');
-      toast('未能自动切换到该分支，已显示预览。');
-      return;
-    }
-
-    // 5) 仍未定位，但不武断声明“未在该分支”
+    // 4) 仍未定位，但不武断声明“未在该分支”
     openModal(node.text || '(无文本)', '节点预览（未能定位到页面元素，已为你展示文本）');
   }
 
