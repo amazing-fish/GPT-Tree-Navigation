@@ -385,11 +385,33 @@
   let LAST_MAPPING = null, LAST_LINEAR = [], LAST_RAW_JSON = null;
   let DOM_BY_SIG = new Map();  // 签名 -> 元素
   let DOM_BY_ID = new Map();   // messageId -> 元素
-  let CURRENT_BRANCH_IDS = new Set();
-  let CURRENT_BRANCH_SIGS = new Set();
+  const CURRENT_BRANCH_IDS = new Set();
+  const CURRENT_BRANCH_SIGS = new Set();
   let CURRENT_BRANCH_LEAF_ID = null;
   let CURRENT_BRANCH_LEAF_SIG = null;
   let fetchCtl = { token: 0 };
+
+  const TREE_NODE_BY_ID = new Map();
+  const TREE_NODE_BY_SIG = new Map();
+  const LAST_HIGHLIGHTED_NODES = new Set();
+  const LAST_HIGHLIGHTED_LINES = new Set();
+
+  const replaceSetContents = (target, source)=>{ target.clear(); source.forEach(v=>target.add(v)); };
+
+  const clearHighlights = ()=>{
+    LAST_HIGHLIGHTED_NODES.forEach(el=>{ if (el?.isConnected) el.classList.remove('gtt-current', 'gtt-current-leaf'); });
+    LAST_HIGHLIGHTED_LINES.forEach(el=>{ if (el?.isConnected) el.classList.remove('gtt-current-line'); });
+    LAST_HIGHLIGHTED_NODES.clear();
+    LAST_HIGHLIGHTED_LINES.clear();
+  };
+
+  const registerTreeNodeDom = (el, node)=>{
+    if (!el || !node) return;
+    const ids = Array.isArray(node.chainIds) && node.chainIds.length ? node.chainIds : [node.id];
+    const sigs = Array.isArray(node.chainSigs) && node.chainSigs.length ? node.chainSigs : [node.sig];
+    ids.forEach(id=>{ if (id) TREE_NODE_BY_ID.set(id, el); });
+    sigs.forEach(sig=>{ if (sig) TREE_NODE_BY_SIG.set(sig, el); });
+  };
 
   async function fetchMapping(){
     const myTok = ++fetchCtl.token;
@@ -414,8 +436,8 @@
     const out = [];
     const ids = new Set();
     const sigs = new Set();
-    DOM_BY_SIG = new Map();
-    DOM_BY_ID = new Map();
+    DOM_BY_SIG.clear();
+    DOM_BY_ID.clear();
     for (const el of blocks){
       const textEl = $(CONFIG.SELECTORS.messageText, el) || el;
       const raw = (textEl?.innerText || '').trim();
@@ -434,8 +456,8 @@
       if (messageId) DOM_BY_ID.set(messageId, el);
     }
     LAST_LINEAR = out;
-    CURRENT_BRANCH_IDS = ids;
-    CURRENT_BRANCH_SIGS = sigs;
+    replaceSetContents(CURRENT_BRANCH_IDS, ids);
+    replaceSetContents(CURRENT_BRANCH_SIGS, sigs);
     if (out.length){
       const leaf = out[out.length - 1];
       CURRENT_BRANCH_LEAF_ID = leaf?.id || null;
@@ -534,11 +556,15 @@
   }
 
   function renderTreeGradually(targetEl, treeData){
+    clearHighlights();
+    TREE_NODE_BY_ID.clear();
+    TREE_NODE_BY_SIG.clear();
     targetEl.innerHTML = '';
     const stats = { total:0 };
     const container = document.createDocumentFragment();
 
     const queue = [];
+    let queueIndex = 0;
     const pushList = (nodes, parent)=>{ for (const n of nodes){ queue.push({ node:n, parent }); } };
 
     const createItem = (node)=>{
@@ -550,6 +576,7 @@
       const meta = document.createElement('span'); meta.className='meta'; meta.textContent = node.children?.length ? `(${node.children.length})` : '';
       const pv = document.createElement('span'); pv.className='pv'; pv.textContent = preview(node.text);
       item.append(badge,title,meta,pv); item.addEventListener('click', ()=>jumpTo(node));
+      registerTreeNodeDom(item, node);
       return item;
     };
 
@@ -562,8 +589,8 @@
 
     const step = () => {
       let cnt = 0;
-      while (cnt < CONFIG.RENDER_CHUNK && queue.length){
-        const { node, parent } = queue.shift();
+      while (cnt < CONFIG.RENDER_CHUNK && queueIndex < queue.length){
+        const { node, parent } = queue[queueIndex++];
         const item = createItem(node);
         parent.appendChild(item);
         stats.total++;
@@ -573,7 +600,14 @@
         }
         cnt++;
       }
-      if (queue.length){ rafIdle(step); } else { targetEl.appendChild(container); updateStats(stats.total); applyCurrentBranchHighlight(targetEl); }
+      if (queueIndex < queue.length){
+        rafIdle(step);
+      } else {
+        targetEl.appendChild(container);
+        queue.length = 0; queueIndex = 0;
+        updateStats(stats.total);
+        applyCurrentBranchHighlight(targetEl);
+      }
     };
     step();
   }
@@ -582,15 +616,50 @@
     const treeRoot = rootEl || $('#gtt-tree');
     if (!treeRoot) return;
 
-    const nodeEls = treeRoot.querySelectorAll('.gtt-node');
-    const connectorEls = treeRoot.querySelectorAll('.gtt-children');
-    nodeEls.forEach(el => { el.classList.remove('gtt-current', 'gtt-current-leaf'); });
-    connectorEls.forEach(el => el.classList.remove('gtt-current-line'));
+    clearHighlights();
 
     const hasBranch = (CURRENT_BRANCH_IDS?.size || 0) > 0 || (CURRENT_BRANCH_SIGS?.size || 0) > 0;
     if (!hasBranch) return;
 
-    nodeEls.forEach(el => {
+    const nodesToHighlight = new Set();
+    CURRENT_BRANCH_IDS.forEach(id => {
+      const el = TREE_NODE_BY_ID.get(id);
+      if (el) nodesToHighlight.add(el);
+    });
+    CURRENT_BRANCH_SIGS.forEach(sig => {
+      const el = TREE_NODE_BY_SIG.get(sig);
+      if (el) nodesToHighlight.add(el);
+    });
+
+    const highlightEl = (el)=>{
+      if (!el || !el.isConnected) return;
+      el.classList.add('gtt-current');
+      const chainIds = Array.isArray(el._chainIds) ? el._chainIds : null;
+      const chainSigs = Array.isArray(el._chainSigs) ? el._chainSigs : null;
+      const id = el.dataset?.nodeId;
+      const sig = el.dataset?.sig;
+      const isLeaf = (
+        (CURRENT_BRANCH_LEAF_ID && (id === CURRENT_BRANCH_LEAF_ID || (chainIds && chainIds.includes(CURRENT_BRANCH_LEAF_ID)))) ||
+        (CURRENT_BRANCH_LEAF_SIG && (sig === CURRENT_BRANCH_LEAF_SIG || (chainSigs && chainSigs.includes(CURRENT_BRANCH_LEAF_SIG))))
+      );
+      if (isLeaf){
+        el.classList.add('gtt-current-leaf');
+      }
+      LAST_HIGHLIGHTED_NODES.add(el);
+      const parent = el.parentElement;
+      if (parent?.classList?.contains('gtt-children')){
+        parent.classList.add('gtt-current-line');
+        LAST_HIGHLIGHTED_LINES.add(parent);
+      }
+    };
+
+    if (nodesToHighlight.size){
+      nodesToHighlight.forEach(highlightEl);
+      return;
+    }
+
+    // 回退：若缓存未命中，遍历节点确保高亮正确
+    treeRoot.querySelectorAll('.gtt-node').forEach(el => {
       const id = el.dataset?.nodeId;
       const sig = el.dataset?.sig;
       const chainIds = Array.isArray(el._chainIds) ? el._chainIds : null;
@@ -599,20 +668,7 @@
       const matchesSig = sig && CURRENT_BRANCH_SIGS.has(sig);
       const matchesChainId = chainIds ? chainIds.some(cid => CURRENT_BRANCH_IDS.has(cid)) : false;
       const matchesChainSig = chainSigs ? chainSigs.some(cs => CURRENT_BRANCH_SIGS.has(cs)) : false;
-      const isCurrent = matchesId || matchesSig || matchesChainId || matchesChainSig;
-      if (!isCurrent) return;
-      el.classList.add('gtt-current');
-      const isLeaf = (
-        (CURRENT_BRANCH_LEAF_ID && (id === CURRENT_BRANCH_LEAF_ID || (chainIds && chainIds.includes(CURRENT_BRANCH_LEAF_ID)))) ||
-        (CURRENT_BRANCH_LEAF_SIG && (sig === CURRENT_BRANCH_LEAF_SIG || (chainSigs && chainSigs.includes(CURRENT_BRANCH_LEAF_SIG))))
-      );
-      if (isLeaf){
-        el.classList.add('gtt-current-leaf');
-      }
-      const parent = el.parentElement;
-      if (parent?.classList?.contains('gtt-children')){
-        parent.classList.add('gtt-current-line');
-      }
+      if (matchesId || matchesSig || matchesChainId || matchesChainSig){ highlightEl(el); }
     });
   }
 
