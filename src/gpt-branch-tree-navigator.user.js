@@ -120,7 +120,6 @@
   /** ================= 工具 ================= **/
   const $ = (s, r=document) => r.querySelector(s);
   const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
-  const log = (...a)=>console.debug('[GPT-Tree]', ...a);
   const hash = (s) => { let h=0; for (let i=0;i<s.length;i++) h=((h<<5)-h + s.charCodeAt(i))|0; return (h>>>0).toString(36); };
   const normalize = (s)=> (s||'').replace(/\u200b/g,'').replace(/\s+/g,' ').trim();
   const normalizeForPreview = (s)=> (s||'').replace(/\u200b/g,'').replace(/\r\n?/g,'\n');
@@ -234,14 +233,14 @@
         const req = (input instanceof Request) ? input : null;
         const hdrs = req ? Object.fromEntries(req.headers.entries()) : (init?.headers || {});
         const auth = hdrs?.authorization || hdrs?.Authorization;
-        if (auth && !LAST_AUTH){ LAST_AUTH = { Authorization: auth }; log('captured auth'); }
+        if (auth && !LAST_AUTH){ LAST_AUTH = { Authorization: auth }; }
       }catch(_) {}
       const res = await origFetch(...args);
       try{
         const url = typeof input==='string' ? input : input?.url || '';
         if (/\/backend-api\/conversation\//.test(url)) {
           const clone = res.clone(); const json = await clone.json();
-          if (json?.mapping) { LAST_RAW_JSON = json; LAST_MAPPING = json.mapping; buildTreeFromMapping(LAST_MAPPING); }
+          if (json?.mapping) { LAST_MAPPING = json.mapping; buildTreeFromMapping(LAST_MAPPING); }
         }
       }catch(_) {}
       return res;
@@ -254,7 +253,7 @@
       const r = await origFetch('/api/auth/session', { credentials:'include' });
       if (r.ok){
         const j = await r.json();
-        if (j?.accessToken){ LAST_AUTH = { Authorization: `Bearer ${j.accessToken}` }; log('token via session'); return LAST_AUTH; }
+        if (j?.accessToken){ LAST_AUTH = { Authorization: `Bearer ${j.accessToken}` }; return LAST_AUTH; }
       }
     }catch(_){ }
     return LAST_AUTH || {};
@@ -286,7 +285,6 @@
       <div id="gtt-body">
         <input id="gtt-search" placeholder="搜索节点（文本/角色）… / 聚焦，Esc 清除">
         <div id="gtt-pref">
-          <button class="btn" id="gtt-btn-openjson" title="调试：在新标签打开 mapping">调试</button>
           <span style="opacity:.65" id="gtt-stats"></span>
         </div>
         <div id="gtt-tree"></div>
@@ -316,13 +314,6 @@
       $$('#gtt-tree .gtt-node').forEach(n=>{ n.style.display = n.textContent.toLowerCase().includes(q) ? '' : 'none'; });
     }, 120);
     inputSearch.addEventListener('input', onSearch);
-
-    $('#gtt-btn-openjson').addEventListener('click', ()=>{
-      if (!LAST_RAW_JSON) return alert('尚未获取 mapping');
-      const blob = new Blob([JSON.stringify(LAST_RAW_JSON,null,2)], {type:'application/json'});
-      const url = URL.createObjectURL(blob);
-      window.open(url, '_blank'); setTimeout(()=>URL.revokeObjectURL(url), 8000);
-    });
 
     // 初始化偏好
     // 双击标题栏=最小化/还原
@@ -382,7 +373,7 @@
   }
 
   /** ================= 数据：mapping / 线性回退 ================= **/
-  let LAST_MAPPING = null, LAST_LINEAR = [], LAST_RAW_JSON = null;
+  let LAST_MAPPING = null;
   let DOM_BY_SIG = new Map();  // 签名 -> 元素
   let DOM_BY_ID = new Map();   // messageId -> 元素
   let CURRENT_BRANCH_IDS = new Set();
@@ -402,9 +393,9 @@
         if (myTok !== fetchCtl.token) return null; // 过期
         if (r.ok){
           const j = await r.json();
-          if (j?.mapping){ LAST_RAW_JSON = j; return j.mapping; }
-        }else{ log('GET mapping failed', u, r.status); }
-      }catch(err){ log('GET mapping error', err); }
+          if (j?.mapping){ return j.mapping; }
+        }
+      }catch(_err){ }
     }
     return null;
   }
@@ -433,7 +424,6 @@
       sigs.add(sig);
       if (messageId) DOM_BY_ID.set(messageId, el);
     }
-    LAST_LINEAR = out;
     CURRENT_BRANCH_IDS = ids;
     CURRENT_BRANCH_SIGS = sigs;
     if (out.length){
@@ -449,7 +439,6 @@
   }
 
   /** ================= 构树与渲染 ================= **/
-  const nodeText = (p)=> Array.isArray(p) ? p.join('\n') : (typeof p==='string' ? p : '');
   const preview = (t, n=CONFIG.PREVIEW_MAX_CHARS)=>{ const s=normalize(t); return s.length>n ? s.slice(0,n)+'…' : s; };
 
   // 识别“工具/系统”角色
@@ -729,7 +718,7 @@
 
   async function rebuildTree(opts={}){
     ensureFab(); ensurePanel();
-    if (opts.hard){ LAST_MAPPING=null; LAST_LINEAR=[]; LAST_RAW_JSON=null; }
+    if (opts.hard){ LAST_MAPPING=null; }
     harvestLinearNodes(); // 先收集一次，确保 DOM_BY_SIG/ID 准备就绪
     if (opts.forceFetch || !LAST_MAPPING){ LAST_MAPPING = await fetchMapping(); }
     if (LAST_MAPPING) buildTreeFromMapping(LAST_MAPPING); else buildTreeFromLinear(harvestLinearNodes());
