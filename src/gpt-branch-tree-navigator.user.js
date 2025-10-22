@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.4.2
+// @version      1.5.0
 // @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
@@ -88,9 +88,9 @@
 
     /* 预览模态 */
     #gtt-modal{position:fixed;inset:0;z-index:1000000;background:rgba(0,0,0,.42);display:none;align-items:center;justify-content:center}
-    #gtt-modal .card{max-width:880px;max-height:80vh;overflow:auto;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25)}
-    #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa)}
-    #gtt-modal .bd{padding:12px 16px;font-size:14px;line-height:1.65;overflow-x:auto}
+    #gtt-modal .card{max-width:880px;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25)}
+    #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa);position:sticky;top:0;z-index:5}
+    #gtt-modal .bd{padding:12px 16px;font-size:14px;line-height:1.65;flex:1 1 auto;min-height:0;overflow:auto}
     #gtt-modal .bd p{margin:0 0 10px}
     #gtt-modal .bd h1,#gtt-modal .bd h2,#gtt-modal .bd h3,#gtt-modal .bd h4,#gtt-modal .bd h5,#gtt-modal .bd h6{margin:18px 0 10px;font-weight:600}
     #gtt-modal .bd pre{background:rgba(99,110,123,.08);padding:10px 12px;border-radius:8px;margin:12px 0;font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:13px;line-height:1.55;white-space:pre;overflow:auto}
@@ -116,6 +116,64 @@
       .gtt-node.gtt-current{background:rgba(250,140,22,.18)}
     }
   `);
+
+  const loadScript = (src, attrs={}) => new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing){
+      if (existing.dataset?.gttLoaded === 'true'){ resolve(); return; }
+      existing.addEventListener('load', () => resolve(), { once:true });
+      existing.addEventListener('error', reject, { once:true });
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    Object.entries(attrs || {}).forEach(([k,v]) => { if (v != null) script.setAttribute(k, v); });
+    script.addEventListener('load', () => { script.dataset.gttLoaded = 'true'; resolve(); }, { once:true });
+    script.addEventListener('error', reject, { once:true });
+    document.head.appendChild(script);
+  });
+
+  let katexReady = null;
+  const ensureKatex = () => {
+    if (window.katex && window.renderMathInElement) return Promise.resolve();
+    if (!katexReady){
+      const base = 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist';
+      if (!document.querySelector('link[data-gtt-katex="css"]')){
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = `${base}/katex.min.css`;
+        link.dataset.gttKatex = 'css';
+        document.head.appendChild(link);
+      }
+      katexReady = (async () => {
+        await loadScript(`${base}/katex.min.js`, { 'data-gtt-katex': 'core' });
+        await loadScript(`${base}/contrib/auto-render.min.js`, { 'data-gtt-katex': 'auto' });
+        if (!window.renderMathInElement) throw new Error('KaTeX auto-render unavailable');
+      })().catch(err => { console.warn('[GTT] KaTeX load failed', err); katexReady = null; throw err; });
+    }
+    return katexReady;
+  };
+
+  const renderLatex = (target) => {
+    if (!target) return;
+    const render = () => {
+      try{
+        window.renderMathInElement(target, {
+          delimiters: [
+            { left: '$$', right: '$$', display: true },
+            { left: '$', right: '$', display: false },
+            { left: '\\(', right: '\\)', display: false },
+            { left: '\\[', right: '\\]', display: true }
+          ],
+          throwOnError: false,
+          strict: 'ignore'
+        });
+      }catch(err){ console.warn('[GTT] KaTeX render failed', err); }
+    };
+    if (window.renderMathInElement){ render(); return; }
+    ensureKatex().then(() => { if (window.renderMathInElement) render(); }).catch(() => {});
+  };
 
   /** ================= 工具 ================= **/
   const $ = (s, r=document) => r.querySelector(s);
@@ -663,6 +721,7 @@
     $('#gtt-md-body').innerHTML = renderMarkdownLite(text);
     $('#gtt-md-title').textContent = reason || '节点预览（未能定位到页面元素，已为你展示文本）';
     $('#gtt-modal').style.display = 'flex';
+    renderLatex($('#gtt-md-body'));
   }
   function closeModal(){ $('#gtt-modal').style.display='none'; $('#gtt-md-body').innerHTML=''; }
 
