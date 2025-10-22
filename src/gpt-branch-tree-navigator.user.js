@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.4.2
+// @version      1.5.0
 // @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
@@ -88,9 +88,9 @@
 
     /* 预览模态 */
     #gtt-modal{position:fixed;inset:0;z-index:1000000;background:rgba(0,0,0,.42);display:none;align-items:center;justify-content:center}
-    #gtt-modal .card{max-width:880px;max-height:80vh;overflow:auto;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25)}
-    #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa)}
-    #gtt-modal .bd{padding:12px 16px;font-size:14px;line-height:1.65;overflow-x:auto}
+    #gtt-modal .card{max-width:880px;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25)}
+    #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa);position:sticky;top:0;z-index:2}
+    #gtt-modal .bd{flex:1;padding:12px 16px;font-size:14px;line-height:1.65;overflow:auto}
     #gtt-modal .bd p{margin:0 0 10px}
     #gtt-modal .bd h1,#gtt-modal .bd h2,#gtt-modal .bd h3,#gtt-modal .bd h4,#gtt-modal .bd h5,#gtt-modal .bd h6{margin:18px 0 10px;font-weight:600}
     #gtt-modal .bd pre{background:rgba(99,110,123,.08);padding:10px 12px;border-radius:8px;margin:12px 0;font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:13px;line-height:1.55;white-space:pre;overflow:auto}
@@ -98,6 +98,8 @@
     #gtt-modal .bd pre code{background:transparent;padding:0}
     #gtt-modal .bd ul{margin:0 0 12px 18px;padding:0 0 0 12px}
     #gtt-modal .bd li{margin:4px 0}
+    #gtt-modal .bd .gtt-math{display:inline-block;padding:0 3px;border-radius:4px;background:rgba(99,110,123,.18);font-family:'KaTeX_Main','Times New Roman',serif;vertical-align:baseline}
+    #gtt-modal .bd .gtt-math.gtt-math-rendered{background:transparent;padding:0}
     #gtt-modal .btn{border:1px solid var(--gtt-bd,#d0d7de);background:#fff;cursor:pointer;padding:4px 8px;border-radius:8px;font-size:12px}
 
     /* 悬浮恢复按钮（隐藏后出现） */
@@ -127,16 +129,32 @@
   const escapeHtml = (str='')=> str.replace(/[&<>'"]/g, (ch)=> HTML_ESC[ch] || ch);
   const escapeAttr = (str='')=> escapeHtml(str).replace(/`/g,'&#96;');
   const formatInline = (txt='')=>{
-    let out = escapeHtml(txt);
-    out = out.replace(/`([^`]+)`/g, (_m, code)=>`<code>${code}</code>`);
-    out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url)=>`<a href="${escapeAttr(url)}" target="_blank" rel="noreferrer noopener">${label}</a>`);
+    const raw = txt || '';
     const codeHolders = [];
-    out = out.replace(/<code>[^<]*<\/code>/g, (match)=>{ codeHolders.push(match); return `\uFFF0${codeHolders.length-1}\uFFF1`; });
+    const mathHolders = [];
+    const maskedCode = raw.replace(/`([^`]+)`/g, (_m, code)=>{
+      codeHolders.push(code);
+      return `\uFFF0${codeHolders.length-1}\uFFF1`;
+    });
+    const maskedMath = maskedCode.replace(/\\{1,2}\(([\s\S]+?)\\{1,2}\)/g, (_m, expr)=>{
+      mathHolders.push(expr);
+      return `\uFFF2${mathHolders.length-1}\uFFF3`;
+    });
+    let out = escapeHtml(maskedMath);
+    out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url)=>`<a href="${escapeAttr(url)}" target="_blank" rel="noreferrer noopener">${label}</a>`);
     out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
     out = out.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
     out = out.replace(/(\s|^)\*([^*\n]+)\*(?=\s|[\.,!?:;\)\]\}“”"'`]|$)/g, (_m, pre, body)=> `${pre}<em>${body}</em>`);
     out = out.replace(/(\s|^)_(?!_)([^_\n]+)_(?=\s|[\.,!?:;\)\]\}“”"'`]|$)/g, (_m, pre, body)=> `${pre}<em>${body}</em>`);
-    out = out.replace(/\uFFF0(\d+)\uFFF1/g, (_m, idx)=> codeHolders[Number(idx)]);
+    out = out.replace(/\uFFF0(\d+)\uFFF1/g, (_m, idx)=>{
+      const code = codeHolders[Number(idx)] ?? '';
+      return `<code>${escapeHtml(code)}</code>`;
+    });
+    out = out.replace(/\uFFF2(\d+)\uFFF3/g, (_m, idx)=>{
+      const tex = (mathHolders[Number(idx)] ?? '').trim();
+      if (!tex) return '';
+      return `<span class="gtt-math" data-tex="${escapeAttr(tex)}">${escapeHtml(tex)}</span>`;
+    });
     return out;
   };
   const renderMarkdownLite = (raw='')=>{
@@ -198,6 +216,56 @@
     flushList();
     return html;
   };
+  const katexState = { loading: false, queue: [] };
+  function ensureKatex(cb){
+    if (window.katex){ if (cb) cb(); return; }
+    if (cb) katexState.queue.push(cb);
+    if (katexState.loading) return;
+    katexState.loading = true;
+    const css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = 'https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.css';
+    css.crossOrigin = 'anonymous';
+    document.head.appendChild(css);
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.js';
+    script.defer = true;
+    script.onload = ()=>{
+      katexState.loading = false;
+      const tasks = katexState.queue.splice(0);
+      tasks.forEach(fn=>{ try{ fn?.(); }catch(_){ } });
+    };
+    script.onerror = ()=>{ katexState.loading = false; katexState.queue.length = 0; };
+    document.head.appendChild(script);
+  }
+  function typesetMathIn(container){
+    if (!container) return;
+    const targets = container.querySelectorAll('.gtt-math');
+    if (!targets.length) return;
+    const renderAll = ()=>{
+      targets.forEach(el=>{
+        const tex = el.dataset?.tex || el.textContent || '';
+        if (!tex) return;
+        if (window.katex){
+          try{
+            window.katex.render(tex, el, { throwOnError:false });
+            el.classList.add('gtt-math-rendered');
+          }catch(_err){
+            el.textContent = tex;
+            el.classList.remove('gtt-math-rendered');
+          }
+        }else{
+          el.textContent = tex;
+          el.classList.remove('gtt-math-rendered');
+        }
+      });
+    };
+    if (window.katex){
+      renderAll();
+    }else{
+      ensureKatex(renderAll);
+    }
+  }
   const makeSig = (role, text)=> (role||'assistant') + '|' + hash(normalize(text).slice(0, CONFIG.SIG_TEXT_LEN));
   const getConversationId = () => (location.pathname.match(/\/c\/([a-z0-9-]{10,})/i)||[])[1]||null;
   const rafIdle = (fn, ms=CONFIG.RENDER_IDLE_MS) => setTimeout(fn, ms);
@@ -660,7 +728,9 @@
   }
 
   function openModal(text, reason){
-    $('#gtt-md-body').innerHTML = renderMarkdownLite(text);
+    const bodyEl = $('#gtt-md-body');
+    bodyEl.innerHTML = renderMarkdownLite(text);
+    typesetMathIn(bodyEl);
     $('#gtt-md-title').textContent = reason || '节点预览（未能定位到页面元素，已为你展示文本）';
     $('#gtt-modal').style.display = 'flex';
   }
