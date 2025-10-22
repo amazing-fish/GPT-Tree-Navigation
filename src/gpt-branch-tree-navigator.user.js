@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.4.2
-// @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
+// @version      1.5.0
+// @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览（含公式渲染）；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
 // @match        https://chatgpt.com/*
@@ -88,9 +88,9 @@
 
     /* 预览模态 */
     #gtt-modal{position:fixed;inset:0;z-index:1000000;background:rgba(0,0,0,.42);display:none;align-items:center;justify-content:center}
-    #gtt-modal .card{max-width:880px;max-height:80vh;overflow:auto;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25)}
-    #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa)}
-    #gtt-modal .bd{padding:12px 16px;font-size:14px;line-height:1.65;overflow-x:auto}
+    #gtt-modal .card{max-width:880px;max-height:80vh;overflow:hidden;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25);display:flex;flex-direction:column}
+    #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa);position:sticky;top:0;z-index:1}
+    #gtt-modal .bd{padding:12px 16px;font-size:14px;line-height:1.65;overflow:auto;flex:1}
     #gtt-modal .bd p{margin:0 0 10px}
     #gtt-modal .bd h1,#gtt-modal .bd h2,#gtt-modal .bd h3,#gtt-modal .bd h4,#gtt-modal .bd h5,#gtt-modal .bd h6{margin:18px 0 10px;font-weight:600}
     #gtt-modal .bd pre{background:rgba(99,110,123,.08);padding:10px 12px;border-radius:8px;margin:12px 0;font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:13px;line-height:1.55;white-space:pre;overflow:auto}
@@ -98,6 +98,8 @@
     #gtt-modal .bd pre code{background:transparent;padding:0}
     #gtt-modal .bd ul{margin:0 0 12px 18px;padding:0 0 0 12px}
     #gtt-modal .bd li{margin:4px 0}
+    #gtt-modal .bd .gtt-math{margin:12px 0}
+    #gtt-modal .bd .katex-display{margin:16px 0}
     #gtt-modal .btn{border:1px solid var(--gtt-bd,#d0d7de);background:#fff;cursor:pointer;padding:4px 8px;border-radius:8px;font-size:12px}
 
     /* 悬浮恢复按钮（隐藏后出现） */
@@ -126,6 +128,11 @@
   const HTML_ESC = { "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;" };
   const escapeHtml = (str='')=> str.replace(/[&<>'"]/g, (ch)=> HTML_ESC[ch] || ch);
   const escapeAttr = (str='')=> escapeHtml(str).replace(/`/g,'&#96;');
+  const KATEX_RES = {
+    css: 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css',
+    js: 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js',
+    auto: 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js'
+  };
   const formatInline = (txt='')=>{
     let out = escapeHtml(txt);
     out = out.replace(/`([^`]+)`/g, (_m, code)=>`<code>${code}</code>`);
@@ -147,6 +154,8 @@
     let inList = false;
     let codeBuffer = null;
     let codeLang = '';
+    let mathBuffer = null;
+    let mathDelim = null;
     const flushList = ()=>{ if (inList){ html += '</ul>'; inList = false; } };
     const flushCode = ()=>{
       if (codeBuffer){
@@ -157,8 +166,24 @@
         codeLang = '';
       }
     };
+    const flushMath = ()=>{
+      if (mathBuffer){
+        const open = mathDelim?.open || '$$';
+        const close = mathDelim?.close || '$$';
+        const body = mathBuffer.join('\n');
+        const content = `${open}\n${body}\n${close}`;
+        html += `<div class="gtt-math">${escapeHtml(content)}</div>`;
+        mathBuffer = null;
+        mathDelim = null;
+      }
+    };
     for (const line of lines){
       const trimmed = line.trim();
+      if (mathBuffer){
+        if (trimmed === (mathDelim?.close || '')){ flushMath(); }
+        else { mathBuffer.push(line); }
+        continue;
+      }
       if (/^```/.test(trimmed)){
         if (codeBuffer){
           flushCode();
@@ -173,14 +198,23 @@
         codeBuffer.push(line);
         continue;
       }
+      if (trimmed === '$$' || trimmed === '\['){
+        flushCode();
+        flushList();
+        mathBuffer = [];
+        mathDelim = trimmed === '$$' ? { open: '$$', close: '$$' } : { open: '\[', close: '\]' };
+        continue;
+      }
       if (!trimmed){
         flushList();
+        flushMath();
         html += '<br>';
         continue;
       }
       const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
       if (heading){
         flushList();
+        flushMath();
         const level = heading[1].length;
         html += `<h${level}>${formatInline(heading[2])}</h${level}>`;
         continue;
@@ -192,12 +226,68 @@
         continue;
       }
       flushList();
+      flushMath();
       html += `<p>${formatInline(line)}</p>`;
     }
     flushCode();
     flushList();
+    flushMath();
     return html;
   };
+
+  let katexReady = null;
+  function ensureKatex(){
+    if (window.renderMathInElement && window.katex) return Promise.resolve();
+    if (katexReady) return katexReady;
+    katexReady = new Promise((resolve)=>{
+      const done = ()=> resolve();
+      if (!document.querySelector('link[data-gtt-katex]')){
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = KATEX_RES.css;
+        link.dataset.gttKatex = '1';
+        document.head.appendChild(link);
+      }
+      const loadAuto = ()=>{
+        if (window.renderMathInElement){ done(); return; }
+        const autoScript = document.createElement('script');
+        autoScript.src = KATEX_RES.auto;
+        autoScript.dataset.gttKatexAuto = String(Date.now());
+        autoScript.onload = done;
+        autoScript.onerror = ()=>{ katexReady = null; done(); };
+        document.head.appendChild(autoScript);
+      };
+      if (window.katex){ loadAuto(); return; }
+      const script = document.createElement('script');
+      script.src = KATEX_RES.js;
+      script.dataset.gttKatex = String(Date.now());
+      script.onload = loadAuto;
+      script.onerror = ()=>{ katexReady = null; done(); };
+      document.head.appendChild(script);
+    });
+    return katexReady;
+  }
+
+  function typesetMath(root){
+    if (!root) return;
+    ensureKatex().then(()=>{
+      try{
+        if (window.renderMathInElement){
+          window.renderMathInElement(root, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '\\[', right: '\\]', display: true },
+              { left: '\\(', right: '\\)', display: false },
+              { left: '$', right: '$', display: false }
+            ],
+            throwOnError: false,
+            strict: 'ignore',
+            ignoredTags: ['script','noscript','style','textarea','pre','code']
+          });
+        }
+      }catch(_err){}
+    });
+  }
   const makeSig = (role, text)=> (role||'assistant') + '|' + hash(normalize(text).slice(0, CONFIG.SIG_TEXT_LEN));
   const getConversationId = () => (location.pathname.match(/\/c\/([a-z0-9-]{10,})/i)||[])[1]||null;
   const rafIdle = (fn, ms=CONFIG.RENDER_IDLE_MS) => setTimeout(fn, ms);
@@ -663,6 +753,7 @@
     $('#gtt-md-body').innerHTML = renderMarkdownLite(text);
     $('#gtt-md-title').textContent = reason || '节点预览（未能定位到页面元素，已为你展示文本）';
     $('#gtt-modal').style.display = 'flex';
+    typesetMath($('#gtt-md-body'));
   }
   function closeModal(){ $('#gtt-modal').style.display='none'; $('#gtt-md-body').innerHTML=''; }
 
