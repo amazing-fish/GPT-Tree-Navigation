@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.4.2
+// @version      1.5.0
 // @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
@@ -88,9 +88,9 @@
 
     /* 预览模态 */
     #gtt-modal{position:fixed;inset:0;z-index:1000000;background:rgba(0,0,0,.42);display:none;align-items:center;justify-content:center}
-    #gtt-modal .card{max-width:880px;max-height:80vh;overflow:auto;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25)}
-    #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa)}
-    #gtt-modal .bd{padding:12px 16px;font-size:14px;line-height:1.65;overflow-x:auto}
+    #gtt-modal .card{max-width:880px;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25)}
+    #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa);position:sticky;top:0;z-index:2}
+    #gtt-modal .bd{flex:1 1 auto;padding:12px 16px;font-size:14px;line-height:1.65;overflow:auto}
     #gtt-modal .bd p{margin:0 0 10px}
     #gtt-modal .bd h1,#gtt-modal .bd h2,#gtt-modal .bd h3,#gtt-modal .bd h4,#gtt-modal .bd h5,#gtt-modal .bd h6{margin:18px 0 10px;font-weight:600}
     #gtt-modal .bd pre{background:rgba(99,110,123,.08);padding:10px 12px;border-radius:8px;margin:12px 0;font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:13px;line-height:1.55;white-space:pre;overflow:auto}
@@ -98,6 +98,19 @@
     #gtt-modal .bd pre code{background:transparent;padding:0}
     #gtt-modal .bd ul{margin:0 0 12px 18px;padding:0 0 0 12px}
     #gtt-modal .bd li{margin:4px 0}
+    .gtt-math{font-family:'Cambria Math','STIX Two Math','Times New Roman',serif;color:inherit}
+    .gtt-math-inline{display:inline-flex;align-items:flex-end;gap:4px}
+    .gtt-math-block{display:block;margin:12px 0;padding:10px 12px;border-radius:10px;background:rgba(99,110,123,.12)}
+    .gtt-frac{display:inline-flex;flex-direction:column;align-items:center;line-height:1.2;margin:0 4px}
+    .gtt-frac-top,.gtt-frac-bottom{text-align:center;padding:0 4px}
+    .gtt-frac-divider{border-top:1px solid currentColor;width:100%;margin:2px 0}
+    .gtt-script-wrap{display:inline-flex;align-items:flex-end}
+    .gtt-script-wrap sup,.gtt-script-wrap sub{font-size:.75em;margin-left:1px}
+    .gtt-root{display:inline-flex;align-items:flex-start;gap:3px;margin:0 4px}
+    .gtt-root-body{border-top:1px solid currentColor;padding:2px 4px;display:inline-block}
+    .gtt-root-index{font-size:.7em;padding-right:2px}
+    .gtt-math table{border-collapse:separate;border-spacing:6px 4px;margin:4px 0}
+    .gtt-math td{padding:2px 6px;text-align:center}
     #gtt-modal .btn{border:1px solid var(--gtt-bd,#d0d7de);background:#fff;cursor:pointer;padding:4px 8px;border-radius:8px;font-size:12px}
 
     /* 悬浮恢复按钮（隐藏后出现） */
@@ -112,6 +125,7 @@
     @media (prefers-color-scheme: dark){
       :root{--gtt-bg:#0b0e14;--gtt-hd:#0f131a;--gtt-bd:#2b3240;--gtt-cur:#f59b4c;color-scheme:dark}
       #gtt-header .btn,#gtt-modal .btn,#gtt-fab{background:#0b0e14;color:#d1d7e0}
+      .gtt-math-block{background:rgba(148,163,184,.18)}
       .gtt-node:hover{background:rgba(120,152,255,.12)}
       .gtt-node.gtt-current{background:rgba(250,140,22,.18)}
     }
@@ -139,10 +153,255 @@
     out = out.replace(/\uFFF0(\d+)\uFFF1/g, (_m, idx)=> codeHolders[Number(idx)]);
     return out;
   };
+  const parseStructuredMath = (raw='')=>{
+    if (typeof raw !== 'string') return null;
+    const trimmed = raw.trim();
+    const match = trimmed.match(/^﹛(inline|block)-math﹜([\s\S]*)﹛\/\1﹜$/);
+    if (!match) return null;
+    const kind = match[1];
+    const body = match[2].replace(/\r/g, '');
+    const lines = body.split('\n');
+    const root = { type: `${kind}-math`, props:{}, children: [] };
+    const stack = [{ kind:'node', node: root, indent: -1 }];
+    const normalizeQuotes = (str='')=> str.replace(/[“”]/g,'"').replace(/[‘’]/g,"'");
+    const parseLiteral = (str='')=>{
+      const cleaned = normalizeQuotes(str.trim());
+      if (!cleaned) return '';
+      const first = cleaned[0]; const last = cleaned[cleaned.length-1];
+      if ((first === '"' && last === '"') || (first === "'" && last === "'")){
+        try{
+          if (first === "'"){
+            const inner = cleaned.slice(1,-1).replace(/\\/g,'\\\\').replace(/"/g,'\\"');
+            return JSON.parse(`"${inner}"`);
+          }
+          return JSON.parse(cleaned);
+        }catch{ return cleaned.slice(1,-1); }
+      }
+      if (cleaned === 'true') return true;
+      if (cleaned === 'false') return false;
+      if (cleaned === 'null') return null;
+      return cleaned;
+    };
+    const setProp = (target, key, value)=>{
+      if (!target || !key) return;
+      if (!target.props) target.props = {};
+      const arrMatch = key.match(/^([^\[\]]+)\[(\d+)\]$/);
+      if (arrMatch){
+        const base = arrMatch[1];
+        const idx = Number(arrMatch[2]);
+        if (!Array.isArray(target.props[base])) target.props[base] = [];
+        target.props[base][idx] = value;
+        return;
+      }
+      if (target.props[key] === undefined){ target.props[key] = value; }
+      else if (Array.isArray(target.props[key])){ target.props[key].push(value); }
+      else { target.props[key] = [target.props[key], value]; }
+    };
+    const createLeafNode = (key, rawValue)=>{
+      const lower = key.toLowerCase();
+      const value = parseLiteral(rawValue);
+      if (['text','identifier','number','operator','literal','value','symbol','term'].includes(lower)){
+        return { type: lower, value };
+      }
+      return { type: key, value };
+    };
+    const ensureNodeForProperty = (propCtx)=>{
+      if (!propCtx || propCtx.kind !== 'property') return propCtx;
+      const container = { type:'group', props:{}, children: [] };
+      setProp(propCtx.parent.node, propCtx.key, container);
+      stack.pop();
+      const nodeCtx = { kind:'node', node: container, indent: propCtx.indent };
+      stack.push(nodeCtx);
+      return nodeCtx;
+    };
+    for (const rawLine of lines){
+      const line = rawLine.replace(/\t/g,'    ');
+      const indent = line.match(/^\s*/)[0].length;
+      const trimmedLine = line.trim();
+      if (!trimmedLine) continue;
+      while (stack.length > 1 && indent <= stack[stack.length - 1].indent){ stack.pop(); }
+      let ctx = stack[stack.length - 1];
+      if (trimmedLine.endsWith(':') && !/"\s*$/.test(trimmedLine)){
+        if (ctx.kind === 'property'){ ctx = ensureNodeForProperty(ctx); }
+        const key = trimmedLine.slice(0,-1).trim();
+        stack.push({ kind:'property', key, parent: ctx, indent });
+        continue;
+      }
+      const colonIdx = trimmedLine.indexOf(':');
+      if (colonIdx >= 0){
+        const key = trimmedLine.slice(0, colonIdx).trim();
+        const rest = trimmedLine.slice(colonIdx + 1).trim();
+        if (ctx.kind === 'property'){
+          const leaf = createLeafNode(key, rest);
+          setProp(ctx.parent.node, ctx.key, leaf);
+          stack.pop();
+        }else{
+          setProp(ctx.node, key, parseLiteral(rest));
+        }
+        continue;
+      }
+      const node = { type: trimmedLine, props:{}, children: [] };
+      if (ctx.kind === 'property'){
+        setProp(ctx.parent.node, ctx.key, node);
+        stack.pop();
+        stack.push({ kind:'node', node, indent });
+      }else{
+        ctx.node.children.push(node);
+        stack.push({ kind:'node', node, indent });
+      }
+    }
+    return root;
+  };
+  const renderStructuredMathExpr = (expr, opts={})=>{
+    if (expr == null) return '';
+    if (typeof expr === 'string' || typeof expr === 'number' || typeof expr === 'boolean'){ return escapeHtml(String(expr)); }
+    if (Array.isArray(expr)){ return expr.map(item=>renderStructuredMathExpr(item, { inline:true })).join(''); }
+    const typeRaw = expr?.type || '';
+    const type = typeof typeRaw === 'string' ? typeRaw.toLowerCase() : '';
+    const props = expr?.props || {};
+    const children = Array.isArray(expr?.children) ? expr.children.filter(v=>v!=null) : [];
+    const value = expr?.value ?? props?.value ?? props?.text ?? props?.symbol ?? null;
+    const renderList = (val)=> Array.isArray(val) ? val.map(item=>renderStructuredMathExpr(item,{inline:true})).join('') : renderStructuredMathExpr(val,{inline:true});
+    const renderChildren = ()=> children.map(ch=>renderStructuredMathExpr(ch,{inline:true})).join('');
+    switch(type){
+      case 'block-math':
+      case 'inline-math':{
+        const parts = [];
+        if (children.length) parts.push(renderChildren());
+        for (const key of Object.keys(props)){ parts.push(renderList(props[key])); }
+        return parts.join('');
+      }
+      case 'text':
+      case 'identifier':
+      case 'number':
+      case 'literal':
+      case 'value':
+      case 'symbol':
+      case 'term':
+        if (value != null) return escapeHtml(String(value));
+        return renderChildren();
+      case 'operator':
+        if (value != null) return `<span class="gtt-math-op">${escapeHtml(String(value))}</span>`;
+        return renderChildren();
+      case 'fraction':{
+        const numerator = props.numerator ?? (children.length ? children[0] : null);
+        const denominator = props.denominator ?? (children.length > 1 ? children[1] : null);
+        if (!numerator && !denominator) return renderChildren();
+        return `<span class="gtt-frac"><span class="gtt-frac-top">${renderStructuredMathExpr(numerator,{inline:true})}</span><span class="gtt-frac-divider"></span><span class="gtt-frac-bottom">${renderStructuredMathExpr(denominator,{inline:true})}</span></span>`;
+      }
+      case 'superscript':
+      case 'power':{
+        const base = props.base ?? (children.length ? children[0] : null);
+        const exponent = props.exponent ?? props.power ?? (children.length > 1 ? children[1] : null);
+        return `<span class="gtt-script-wrap"><span>${renderStructuredMathExpr(base,{inline:true})}</span><sup>${renderStructuredMathExpr(exponent,{inline:true})}</sup></span>`;
+      }
+      case 'subscript':{
+        const base = props.base ?? (children.length ? children[0] : null);
+        const sub = props.sub ?? props.subscript ?? (children.length > 1 ? children[1] : null);
+        return `<span class="gtt-script-wrap"><span>${renderStructuredMathExpr(base,{inline:true})}</span><sub>${renderStructuredMathExpr(sub,{inline:true})}</sub></span>`;
+      }
+      case 'subsuperscript':{
+        const base = props.base ?? (children.length ? children[0] : null);
+        const sup = props.superscript ?? props.exponent ?? (children.length > 1 ? children[1] : null);
+        const sub = props.subscript ?? props.sub ?? (children.length > 2 ? children[2] : null);
+        return `<span class="gtt-script-wrap"><span>${renderStructuredMathExpr(base,{inline:true})}</span><span><sup>${renderStructuredMathExpr(sup,{inline:true})}</sup><sub>${renderStructuredMathExpr(sub,{inline:true})}</sub></span></span>`;
+      }
+      case 'sqrt':
+      case 'square-root':{
+        const radicand = props.radicand ?? props.value ?? (children.length ? children[0] : null);
+        return `<span class="gtt-root"><span class="gtt-root-sign">√</span><span class="gtt-root-body">${renderStructuredMathExpr(radicand,{inline:true})}</span></span>`;
+      }
+      case 'root':{
+        const degree = props.degree ?? props.index ?? (children.length ? children[0] : null);
+        const radicand = props.radicand ?? (children.length > 1 ? children[1] : null);
+        return `<span class="gtt-root"><span class="gtt-root-index">${renderStructuredMathExpr(degree,{inline:true})}</span><span class="gtt-root-sign">√</span><span class="gtt-root-body">${renderStructuredMathExpr(radicand,{inline:true})}</span></span>`;
+      }
+      case 'sum':
+      case 'summation':{
+        const lower = props.lower ?? props.start ?? (children.length > 1 ? children[0] : null);
+        const upper = props.upper ?? props.end ?? (children.length > 2 ? children[1] : null);
+        const body = props.body ?? props.value ?? (children.length ? children[children.length-1] : null);
+        return `<span class="gtt-script-wrap"><span>∑</span><span><sub>${renderStructuredMathExpr(lower,{inline:true})}</sub><sup>${renderStructuredMathExpr(upper,{inline:true})}</sup></span></span>${renderStructuredMathExpr(body,{inline:true})}`;
+      }
+      case 'product':{
+        const lower = props.lower ?? props.start ?? (children.length > 1 ? children[0] : null);
+        const upper = props.upper ?? props.end ?? (children.length > 2 ? children[1] : null);
+        const body = props.body ?? props.value ?? (children.length ? children[children.length-1] : null);
+        return `<span class="gtt-script-wrap"><span>∏</span><span><sub>${renderStructuredMathExpr(lower,{inline:true})}</sub><sup>${renderStructuredMathExpr(upper,{inline:true})}</sup></span></span>${renderStructuredMathExpr(body,{inline:true})}`;
+      }
+      case 'integral':{
+        const lower = props.lower ?? props.start ?? (children.length > 1 ? children[0] : null);
+        const upper = props.upper ?? props.end ?? (children.length > 2 ? children[1] : null);
+        const body = props.body ?? props.value ?? (children.length ? children[children.length-1] : null);
+        return `<span class="gtt-script-wrap"><span>∫</span><span><sub>${renderStructuredMathExpr(lower,{inline:true})}</sub><sup>${renderStructuredMathExpr(upper,{inline:true})}</sup></span></span>${renderStructuredMathExpr(body,{inline:true})}`;
+      }
+      case 'limit':{
+        const towards = props.to ?? props.limit ?? props.approach ?? (children.length ? children[0] : null);
+        const body = props.body ?? props.value ?? (children.length > 1 ? children[1] : null);
+        return `<span class="gtt-script-wrap"><span>lim</span><sub>${renderStructuredMathExpr(towards,{inline:true})}</sub></span>${renderStructuredMathExpr(body,{inline:true})}`;
+      }
+      case 'matrix':{
+        const rows = Array.isArray(props.rows) ? props.rows : (children.length ? children : []);
+        if (!rows.length) return renderChildren();
+        const rowHtml = rows.map(row=>{
+          const cells = Array.isArray(row?.props?.cells) ? row.props.cells :
+            Array.isArray(row?.cells) ? row.cells :
+            Array.isArray(row?.props?.items) ? row.props.items :
+            Array.isArray(row?.items) ? row.items :
+            Array.isArray(row?.children) ? row.children :
+            Array.isArray(row) ? row : [];
+          const cellHtml = cells.map(cell=>`<td>${renderStructuredMathExpr(cell,{inline:true})}</td>`).join('');
+          return `<tr>${cellHtml}</tr>`;
+        }).join('');
+        return `<span class="gtt-math-inline"><table class="gtt-math-matrix">${rowHtml}</table></span>`;
+      }
+      case 'cases':{
+        const rows = Array.isArray(props.cases) ? props.cases : (children.length ? children : []);
+        if (!rows.length) return renderChildren();
+        const rowHtml = rows.map(row=>{
+          const valuePart = renderStructuredMathExpr(row?.value ?? row?.props?.value ?? (Array.isArray(row?.children) ? row.children[0] : null), {inline:true});
+          const condPart = renderStructuredMathExpr(row?.condition ?? row?.props?.condition ?? (Array.isArray(row?.children) ? row.children[1] : null), {inline:true});
+          return `<tr><td>${valuePart}</td><td>${condPart ? `, ${condPart}` : ''}</td></tr>`;
+        }).join('');
+        return `<span class="gtt-math-inline">{<table class="gtt-math-matrix">${rowHtml}</table>}</span>`;
+      }
+      case 'line-break':
+      case 'newline':
+        return '<br>';
+      case 'group':
+      case 'row':
+      case 'cell':
+      case 'sequence':
+      case 'list':
+        if (children.length) return renderChildren();
+        return Object.keys(props).map(key=>renderList(props[key])).join('');
+      default:{
+        if (value != null) return escapeHtml(String(value));
+        if (children.length) return renderChildren();
+        return Object.keys(props).map(key=>renderList(props[key])).join('');
+      }
+    }
+  };
+  const renderStructuredMath = (raw='')=>{
+    const ast = parseStructuredMath(raw);
+    if (!ast) return null;
+    const display = (ast.type||'').toLowerCase() === 'block-math';
+    const inner = renderStructuredMathExpr(ast, { inline: !display });
+    if (!inner) return null;
+    return display ? `<div class="gtt-math gtt-math-block">${inner}</div>` : `<span class="gtt-math gtt-math-inline">${inner}</span>`;
+  };
   const renderMarkdownLite = (raw='')=>{
     const text = normalizeForPreview(raw || '').trimEnd();
     if (!text) return '<p>(空)</p>';
-    const lines = text.split('\n');
+    const formulaHolders = [];
+    const prepared = text.replace(/﹛(inline|block)-math﹜[\s\S]*?﹛\/\1﹜/g, (match)=>{
+      const html = renderStructuredMath(match);
+      if (!html) return match;
+      const token = `\uFFF2${formulaHolders.length}\uFFF3`;
+      formulaHolders.push({ html, raw: match });
+      return token;
+    });
+    const lines = prepared.split('\n');
     let html = '';
     let inList = false;
     let codeBuffer = null;
@@ -170,7 +429,20 @@
         continue;
       }
       if (codeBuffer){
-        codeBuffer.push(line);
+        let codeLine = line;
+        if (formulaHolders.length){
+          codeLine = codeLine.replace(/\uFFF2(\d+)\uFFF3/g, (_m, idx)=>{
+            const holder = formulaHolders[Number(idx)];
+            return holder?.raw || _m;
+          });
+        }
+        codeBuffer.push(codeLine);
+        continue;
+      }
+      const formulaOnly = trimmed.match(/^\uFFF2(\d+)\uFFF3$/);
+      if (formulaOnly){
+        flushList();
+        html += `\uFFF2${formulaOnly[1]}\uFFF3`;
         continue;
       }
       if (!trimmed){
@@ -196,7 +468,11 @@
     }
     flushCode();
     flushList();
-    return html;
+    const finalHtml = formulaHolders.length ? html.replace(/\uFFF2(\d+)\uFFF3/g, (_m, idx)=>{
+      const holder = formulaHolders[Number(idx)];
+      return holder?.html || '';
+    }) : html;
+    return finalHtml;
   };
   const makeSig = (role, text)=> (role||'assistant') + '|' + hash(normalize(text).slice(0, CONFIG.SIG_TEXT_LEN));
   const getConversationId = () => (location.pathname.match(/\/c\/([a-z0-9-]{10,})/i)||[])[1]||null;
