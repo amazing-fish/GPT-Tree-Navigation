@@ -69,19 +69,23 @@
     #gtt-body{display:flex;flex-direction:column;min-height:0}
     #gtt-search{margin:8px 10px;padding:6px 8px;border:1px solid var(--gtt-bd,#d0d7de);border-radius:8px;width:calc(100% - 20px);outline:none;background:var(--gtt-bg,#fff)}
     #gtt-pref{display:flex;gap:10px;align-items:center;padding:0 10px 8px;color:#555;flex-wrap:wrap}
-    #gtt-tree{overflow:auto;padding:8px 6px 10px}
-    .gtt-node{padding:6px 6px 6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative}
+    #gtt-tree{overflow:auto;padding:8px 6px 10px;position:relative;--gtt-indent:18px}
+    .gtt-node{position:relative;box-sizing:border-box;padding:6px 8px 6px 12px;border-radius:8px;margin:2px 0;cursor:pointer;--gtt-depth:0;margin-left:calc(var(--gtt-indent) * var(--gtt-depth));margin-right:calc(var(--gtt-indent) * var(--gtt-depth) * -1);width:100%}
+    .gtt-node::before{content:'';position:absolute;top:50%;left:calc(var(--gtt-indent) * -1 + 12px);width:var(--gtt-indent);height:1px;background:var(--gtt-bd,#d0d7de);transform:translateY(-50%);opacity:.6;pointer-events:none}
+    .gtt-node[data-depth="0"]::before{display:none}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
     .gtt-node .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);margin-right:6px;opacity:.75}
     .gtt-node .meta{opacity:.7;font-size:11px;margin-left:6px}
     .gtt-node .pv{display:inline-block;opacity:.9;margin-left:6px;white-space:nowrap;max-width:calc(100% - 90px);overflow:hidden;text-overflow:ellipsis}
-    .gtt-children{margin-left:14px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
+    .gtt-children{position:relative;margin:0;padding:0;--gtt-branch-depth:0;width:100%}
+    .gtt-children::before{content:'';position:absolute;top:0;bottom:0;left:calc(var(--gtt-indent) * var(--gtt-branch-depth) + 12px);width:1px;background:var(--gtt-bd,#d0d7de);opacity:.6;pointer-events:none}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
-    .gtt-node.gtt-current{background:rgba(250,140,22,.12);border-left:2px solid var(--gtt-cur,#fa8c16);padding-left:10px}
+    .gtt-node.gtt-current{background:rgba(250,140,22,.12);box-shadow:inset 2px 0 0 var(--gtt-cur,#fa8c16)}
+    .gtt-node.gtt-current::before{background:var(--gtt-cur,#fa8c16);opacity:1}
     .gtt-node.gtt-current .badge{border-color:var(--gtt-cur,#fa8c16);color:var(--gtt-cur,#fa8c16);opacity:1}
     .gtt-node.gtt-current-leaf{box-shadow:0 0 0 2px rgba(250,140,22,.24) inset}
-    .gtt-children.gtt-current-line{border-left:2px dashed var(--gtt-cur,#fa8c16)}
+    .gtt-children.gtt-current-line::before{background:var(--gtt-cur,#fa8c16);opacity:1;width:2px}
 
     /* 最小化态：只显示标题栏 */
     #gtt-panel.gtt-min #gtt-body{display:none}
@@ -534,10 +538,14 @@
     const container = document.createDocumentFragment();
 
     const queue = [];
-    const pushList = (nodes, parent)=>{ for (const n of nodes){ queue.push({ node:n, parent }); } };
+    const pushList = (nodes, parent, depth)=>{
+      for (const n of nodes){ queue.push({ node:n, parent, depth }); }
+    };
 
-    const createItem = (node)=>{
+    const createItem = (node, depth)=>{
       const item = document.createElement('div'); item.className = 'gtt-node'; item.dataset.nodeId = node.id; item.dataset.sig = node.sig; item.title = node.id + '\n\n' + (node.text||'');
+      item.dataset.depth = String(depth);
+      item.style.setProperty('--gtt-depth', depth);
       if (node.chainIds) item._chainIds = node.chainIds;
       if (node.chainSigs) item._chainSigs = node.chainSigs;
       const badge = document.createElement('span'); badge.className='badge'; badge.textContent = node.role==='user'? 'U' : (node.role||'·');
@@ -553,22 +561,32 @@
     container.appendChild(rootDiv);
 
     // 将根节点入队
-    pushList(treeData, rootDiv);
+    pushList(treeData, rootDiv, 0);
 
     const step = () => {
       let cnt = 0;
       while (cnt < CONFIG.RENDER_CHUNK && queue.length){
-        const { node, parent } = queue.shift();
-        const item = createItem(node);
+        const { node, parent, depth } = queue.shift();
+        const item = createItem(node, depth);
         parent.appendChild(item);
         stats.total++;
         if (node.children?.length){
-          const kids = document.createElement('div'); kids.className='gtt-children'; parent.appendChild(kids);
-          pushList(node.children, kids);
+          const kids = document.createElement('div'); kids.className='gtt-children';
+          const branchDepth = depth;
+          kids.dataset.branchDepth = String(branchDepth);
+          kids.style.setProperty('--gtt-branch-depth', branchDepth);
+          parent.appendChild(kids);
+          pushList(node.children, kids, depth + 1);
         }
         cnt++;
       }
-      if (queue.length){ rafIdle(step); } else { targetEl.appendChild(container); updateStats(stats.total); applyCurrentBranchHighlight(targetEl); }
+      if (queue.length){
+        rafIdle(step);
+      } else {
+        targetEl.appendChild(container);
+        updateStats(stats.total);
+        applyCurrentBranchHighlight(targetEl);
+      }
     };
     step();
   }
