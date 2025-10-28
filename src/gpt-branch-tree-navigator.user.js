@@ -75,7 +75,8 @@
     .gtt-node .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);margin-right:6px;opacity:.75}
     .gtt-node .meta{opacity:.7;font-size:11px;margin-left:6px}
     .gtt-node .pv{display:inline-block;opacity:.9;margin-left:6px;white-space:nowrap;max-width:calc(100% - 90px);overflow:hidden;text-overflow:ellipsis}
-    .gtt-children{margin-left:14px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
+    .gtt-children{margin-left:calc(var(--gtt-depth,0)*14px);border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
+    .gtt-children[data-depth="0"]{border-left:none;padding-left:0}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
     .gtt-node.gtt-current{background:rgba(250,140,22,.12);border-left:2px solid var(--gtt-cur,#fa8c16);padding-left:10px}
@@ -534,7 +535,11 @@
     const container = document.createDocumentFragment();
 
     const queue = [];
-    const pushList = (nodes, parent)=>{ for (const n of nodes){ queue.push({ node:n, parent }); } };
+    const pushList = (nodes, parent, depth)=>{
+      for (const n of nodes){
+        queue.push({ node:n, parent, depth });
+      }
+    };
 
     const createItem = (node)=>{
       const item = document.createElement('div'); item.className = 'gtt-node'; item.dataset.nodeId = node.id; item.dataset.sig = node.sig; item.title = node.id + '\n\n' + (node.text||'');
@@ -553,18 +558,23 @@
     container.appendChild(rootDiv);
 
     // 将根节点入队
-    pushList(treeData, rootDiv);
+    pushList(treeData, rootDiv, 0);
 
     const step = () => {
       let cnt = 0;
       while (cnt < CONFIG.RENDER_CHUNK && queue.length){
-        const { node, parent } = queue.shift();
+        const { node, parent, depth } = queue.shift();
         const item = createItem(node);
         parent.appendChild(item);
         stats.total++;
         if (node.children?.length){
-          const kids = document.createElement('div'); kids.className='gtt-children'; parent.appendChild(kids);
-          pushList(node.children, kids);
+          const kids = document.createElement('div');
+          kids.className = 'gtt-children';
+          const childDepth = depth + (node.children.length > 1 ? 1 : 0);
+          kids.dataset.depth = String(childDepth);
+          kids.style.setProperty('--gtt-depth', String(childDepth));
+          parent.appendChild(kids);
+          pushList(node.children, kids, childDepth);
         }
         cnt++;
       }
