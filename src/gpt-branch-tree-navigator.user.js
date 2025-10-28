@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.4.2
+// @version      1.5.0
 // @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
@@ -55,7 +55,7 @@
   };
 
   injectStyle(`
-    :root{--gtt-cur:#fa8c16;}
+    :root{--gtt-cur:#fa8c16;--gtt-meta:#5b616a;--gtt-text:#1f2328;}
     #gtt-panel{
       position:fixed;top:64px;right:12px;z-index:999999;width:${CONFIG.PANEL_WIDTH}px;
       max-height:calc(100vh - 84px);display:flex;flex-direction:column;overflow:hidden;
@@ -69,18 +69,20 @@
     #gtt-body{display:flex;flex-direction:column;min-height:0}
     #gtt-search{margin:8px 10px;padding:6px 8px;border:1px solid var(--gtt-bd,#d0d7de);border-radius:8px;width:calc(100% - 20px);outline:none;background:var(--gtt-bg,#fff)}
     #gtt-pref{display:flex;gap:10px;align-items:center;padding:0 10px 8px;color:#555;flex-wrap:wrap}
-    #gtt-tree{overflow:auto;padding:8px 6px 10px}
-    .gtt-node{padding:6px 6px 6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative}
+    #gtt-tree{overflow:auto;padding:10px 14px 14px 22px}
+    .gtt-node{position:relative;padding:8px 12px;border-radius:10px;margin:3px 0;cursor:pointer;display:flex;flex-direction:column;gap:4px;transition:background .2s ease}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
-    .gtt-node .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);margin-right:6px;opacity:.75}
-    .gtt-node .meta{opacity:.7;font-size:11px;margin-left:6px}
-    .gtt-node .pv{display:inline-block;opacity:.9;margin-left:6px;white-space:nowrap;max-width:calc(100% - 90px);overflow:hidden;text-overflow:ellipsis}
-    .gtt-children{margin-left:14px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
+    .gtt-node-header{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--gtt-meta,#5b616a);letter-spacing:.01em}
+    .gtt-node .badge{display:inline-flex;align-items:center;justify-content:center;min-width:22px;font-size:10px;line-height:1;padding:1px 6px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);opacity:.75}
+    .gtt-node .role{font-weight:600;font-size:11px;opacity:.85}
+    .gtt-node .meta{margin-left:auto;opacity:.55;font-size:10px}
+    .gtt-node .pv{display:block;opacity:.92;line-height:1.55;white-space:normal;word-break:break-word;color:var(--gtt-text,#1f2328)}
+    .gtt-children{margin:2px 0 2px -18px;padding:0 0 0 18px;border-left:1px dashed var(--gtt-bd,#d0d7de)}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
-    .gtt-node.gtt-current{background:rgba(250,140,22,.12);border-left:2px solid var(--gtt-cur,#fa8c16);padding-left:10px}
+    .gtt-node.gtt-current{background:rgba(250,140,22,.12);box-shadow:inset 2px 0 0 0 var(--gtt-cur,#fa8c16)}
     .gtt-node.gtt-current .badge{border-color:var(--gtt-cur,#fa8c16);color:var(--gtt-cur,#fa8c16);opacity:1}
-    .gtt-node.gtt-current-leaf{box-shadow:0 0 0 2px rgba(250,140,22,.24) inset}
+    .gtt-node.gtt-current-leaf{box-shadow:inset 2px 0 0 0 var(--gtt-cur,#fa8c16),inset 0 0 0 2px rgba(250,140,22,.24)}
     .gtt-children.gtt-current-line{border-left:2px dashed var(--gtt-cur,#fa8c16)}
 
     /* 最小化态：只显示标题栏 */
@@ -110,7 +112,7 @@
     #gtt-fab .txt{font-weight:600}
 
     @media (prefers-color-scheme: dark){
-      :root{--gtt-bg:#0b0e14;--gtt-hd:#0f131a;--gtt-bd:#2b3240;--gtt-cur:#f59b4c;color-scheme:dark}
+      :root{--gtt-bg:#0b0e14;--gtt-hd:#0f131a;--gtt-bd:#2b3240;--gtt-cur:#f59b4c;--gtt-meta:#9aa3b8;--gtt-text:#d1d7e0;color-scheme:dark}
       #gtt-header .btn,#gtt-modal .btn,#gtt-fab{background:#0b0e14;color:#d1d7e0}
       .gtt-node:hover{background:rgba(120,152,255,.12)}
       .gtt-node.gtt-current{background:rgba(250,140,22,.18)}
@@ -540,11 +542,22 @@
       const item = document.createElement('div'); item.className = 'gtt-node'; item.dataset.nodeId = node.id; item.dataset.sig = node.sig; item.title = node.id + '\n\n' + (node.text||'');
       if (node.chainIds) item._chainIds = node.chainIds;
       if (node.chainSigs) item._chainSigs = node.chainSigs;
-      const badge = document.createElement('span'); badge.className='badge'; badge.textContent = node.role==='user'? 'U' : (node.role||'·');
-      const title = document.createElement('span'); title.textContent = node.role==='user' ? '用户' : '助手';
-      const meta = document.createElement('span'); meta.className='meta'; meta.textContent = node.children?.length ? `(${node.children.length})` : '';
-      const pv = document.createElement('span'); pv.className='pv'; pv.textContent = preview(node.text);
-      item.append(badge,title,meta,pv); item.addEventListener('click', ()=>jumpTo(node));
+      const header = document.createElement('div'); header.className = 'gtt-node-header';
+      const role = node.role || '';
+      const isUser = role === 'user';
+      const isAssistant = role === 'assistant';
+      const badgeText = isUser ? 'U' : (isAssistant ? 'A' : (role ? role.slice(0,2).toUpperCase() : '·'));
+      const titleText = isUser ? '用户' : (isAssistant ? 'Asst' : (role ? role[0].toUpperCase() + role.slice(1) : ''));
+      const badge = document.createElement('span'); badge.className='badge'; badge.textContent = badgeText;
+      const title = document.createElement('span'); title.className='role'; title.textContent = titleText;
+      header.append(badge);
+      if (titleText) header.append(title);
+      const metaCount = node.children?.length ? `(${node.children.length})` : '';
+      if (metaCount){ const meta = document.createElement('span'); meta.className='meta'; meta.textContent = metaCount; header.append(meta); }
+      const pv = document.createElement('div'); pv.className='pv';
+      const previewText = preview(node.text);
+      pv.textContent = previewText || '(空)';
+      item.append(header,pv); item.addEventListener('click', ()=>jumpTo(node));
       return item;
     };
 
