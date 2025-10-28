@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.4.2
-// @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
+// @version      1.5.0
+// @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”；长链路缩进自适应。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
 // @match        https://chatgpt.com/*
@@ -47,6 +47,21 @@
     })
   };
 
+  const INDENT = {
+    BASE_STEP: 18,
+    MAX: 220,
+    DECAY_DENOM: 220,
+    PAD_MIN: 8,
+    PAD_MAX: 16,
+  };
+
+  const calcIndent = (depth = 0) => {
+    if (!depth || depth <= 0) return 0;
+    const raw = Math.max(depth, 0) * INDENT.BASE_STEP;
+    const eased = INDENT.MAX * (1 - Math.exp(-raw / INDENT.DECAY_DENOM));
+    return Math.min(eased, INDENT.MAX);
+  };
+
   /** ================= 样式 ================= **/
   const injectStyle = (css) => {
     try { GM_addStyle(css); } catch (_) {
@@ -70,15 +85,17 @@
     #gtt-search{margin:8px 10px;padding:6px 8px;border:1px solid var(--gtt-bd,#d0d7de);border-radius:8px;width:calc(100% - 20px);outline:none;background:var(--gtt-bg,#fff)}
     #gtt-pref{display:flex;gap:10px;align-items:center;padding:0 10px 8px;color:#555;flex-wrap:wrap}
     #gtt-tree{overflow:auto;padding:8px 6px 10px}
-    .gtt-node{padding:6px 6px 6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative}
+    .gtt-node{display:flex;align-items:flex-start;gap:6px;padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
-    .gtt-node .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);margin-right:6px;opacity:.75}
-    .gtt-node .meta{opacity:.7;font-size:11px;margin-left:6px}
-    .gtt-node .pv{display:inline-block;opacity:.9;margin-left:6px;white-space:nowrap;max-width:calc(100% - 90px);overflow:hidden;text-overflow:ellipsis}
-    .gtt-children{margin-left:14px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
+    .gtt-node .badge{flex:none;display:inline-block;font-size:10px;padding:2px 6px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);opacity:.75}
+    .gtt-node .label{flex:none;font-weight:600;line-height:1.4}
+    .gtt-node .meta{flex:none;opacity:.7;font-size:11px}
+    .gtt-node .pv{flex:1;min-width:0;opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .gtt-children{--gtt-indent-step:16px;--gtt-indent-pad:12px;margin-left:var(--gtt-indent-step);border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:var(--gtt-indent-pad)}
+    .gtt-children.gtt-indent-flat{margin-left:0;border-left:none;padding-left:12px}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
-    .gtt-node.gtt-current{background:rgba(250,140,22,.12);border-left:2px solid var(--gtt-cur,#fa8c16);padding-left:10px}
+    .gtt-node.gtt-current{background:rgba(250,140,22,.12);border-left:2px solid var(--gtt-cur,#fa8c16);padding-left:12px}
     .gtt-node.gtt-current .badge{border-color:var(--gtt-cur,#fa8c16);color:var(--gtt-cur,#fa8c16);opacity:1}
     .gtt-node.gtt-current-leaf{box-shadow:0 0 0 2px rgba(250,140,22,.24) inset}
     .gtt-children.gtt-current-line{border-left:2px dashed var(--gtt-cur,#fa8c16)}
@@ -534,14 +551,14 @@
     const container = document.createDocumentFragment();
 
     const queue = [];
-    const pushList = (nodes, parent)=>{ for (const n of nodes){ queue.push({ node:n, parent }); } };
+    const pushList = (nodes, parent, depth)=>{ for (const n of nodes){ queue.push({ node:n, parent, depth }); } };
 
-    const createItem = (node)=>{
-      const item = document.createElement('div'); item.className = 'gtt-node'; item.dataset.nodeId = node.id; item.dataset.sig = node.sig; item.title = node.id + '\n\n' + (node.text||'');
+    const createItem = (node, depth)=>{
+      const item = document.createElement('div'); item.className = 'gtt-node'; item.dataset.nodeId = node.id; item.dataset.sig = node.sig; item.dataset.depth = String(depth||0); item.title = node.id + '\n\n' + (node.text||'');
       if (node.chainIds) item._chainIds = node.chainIds;
       if (node.chainSigs) item._chainSigs = node.chainSigs;
       const badge = document.createElement('span'); badge.className='badge'; badge.textContent = node.role==='user'? 'U' : (node.role||'·');
-      const title = document.createElement('span'); title.textContent = node.role==='user' ? '用户' : '助手';
+      const title = document.createElement('span'); title.className = 'label'; title.textContent = node.role==='user' ? '用户' : '助手';
       const meta = document.createElement('span'); meta.className='meta'; meta.textContent = node.children?.length ? `(${node.children.length})` : '';
       const pv = document.createElement('span'); pv.className='pv'; pv.textContent = preview(node.text);
       item.append(badge,title,meta,pv); item.addEventListener('click', ()=>jumpTo(node));
@@ -553,18 +570,27 @@
     container.appendChild(rootDiv);
 
     // 将根节点入队
-    pushList(treeData, rootDiv);
+    pushList(treeData, rootDiv, 0);
 
     const step = () => {
       let cnt = 0;
       while (cnt < CONFIG.RENDER_CHUNK && queue.length){
-        const { node, parent } = queue.shift();
-        const item = createItem(node);
+        const { node, parent, depth } = queue.shift();
+        const item = createItem(node, depth);
         parent.appendChild(item);
         stats.total++;
         if (node.children?.length){
-          const kids = document.createElement('div'); kids.className='gtt-children'; parent.appendChild(kids);
-          pushList(node.children, kids);
+          const kids = document.createElement('div'); kids.className='gtt-children';
+          const nextDepth = (depth || 0) + 1;
+          const currentIndent = calcIndent(depth || 0);
+          const nextIndent = calcIndent(nextDepth);
+          let delta = Math.max(nextIndent - currentIndent, 0);
+          const pad = Math.max(Math.min(delta || 0, INDENT.PAD_MAX), INDENT.PAD_MIN);
+          kids.style.setProperty('--gtt-indent-step', `${delta}px`);
+          kids.style.setProperty('--gtt-indent-pad', `${pad}px`);
+          if (delta <= 0){ kids.classList.add('gtt-indent-flat'); }
+          parent.appendChild(kids);
+          pushList(node.children, kids, nextDepth);
         }
         cnt++;
       }
