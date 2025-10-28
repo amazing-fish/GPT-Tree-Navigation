@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.4.2
+// @version      1.5.0
 // @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
@@ -69,12 +69,15 @@
     #gtt-body{display:flex;flex-direction:column;min-height:0}
     #gtt-search{margin:8px 10px;padding:6px 8px;border:1px solid var(--gtt-bd,#d0d7de);border-radius:8px;width:calc(100% - 20px);outline:none;background:var(--gtt-bg,#fff)}
     #gtt-pref{display:flex;gap:10px;align-items:center;padding:0 10px 8px;color:#555;flex-wrap:wrap}
-    #gtt-tree{overflow:auto;padding:8px 6px 10px}
-    .gtt-node{padding:6px 6px 6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative}
+    #gtt-tree{flex:1;overflow:auto;padding:8px 6px 10px;scrollbar-gutter:stable}
+    .gtt-node{display:flex;gap:10px;align-items:flex-start;padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
-    .gtt-node .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);margin-right:6px;opacity:.75}
-    .gtt-node .meta{opacity:.7;font-size:11px;margin-left:6px}
-    .gtt-node .pv{display:inline-block;opacity:.9;margin-left:6px;white-space:nowrap;max-width:calc(100% - 90px);overflow:hidden;text-overflow:ellipsis}
+    .gtt-node .badge{flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;font-size:10px;padding:2px 6px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);opacity:.75;margin-top:1px}
+    .gtt-node .text{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+    .gtt-node .head{display:flex;align-items:center;gap:6px;min-width:0}
+    .gtt-node .title{display:block;font-size:11px;font-weight:600;line-height:1.2;opacity:.85}
+    .gtt-node .meta{margin-left:auto;opacity:.65;font-size:11px}
+    .gtt-node .pv{display:block;opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
     .gtt-children{margin-left:14px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
@@ -538,13 +541,22 @@
 
     const createItem = (node)=>{
       const item = document.createElement('div'); item.className = 'gtt-node'; item.dataset.nodeId = node.id; item.dataset.sig = node.sig; item.title = node.id + '\n\n' + (node.text||'');
+      if (node.role) item.dataset.role = node.role;
       if (node.chainIds) item._chainIds = node.chainIds;
       if (node.chainSigs) item._chainSigs = node.chainSigs;
-      const badge = document.createElement('span'); badge.className='badge'; badge.textContent = node.role==='user'? 'U' : (node.role||'·');
-      const title = document.createElement('span'); title.textContent = node.role==='user' ? '用户' : '助手';
-      const meta = document.createElement('span'); meta.className='meta'; meta.textContent = node.children?.length ? `(${node.children.length})` : '';
+      const badge = document.createElement('span'); badge.className='badge'; badge.textContent = node.role==='user'? 'U' : (node.role||'·'); badge.setAttribute('aria-hidden', 'true');
+      const textWrap = document.createElement('div'); textWrap.className = 'text';
+      const head = document.createElement('div'); head.className = 'head';
+      const title = document.createElement('span'); title.className = 'title'; title.textContent = node.role==='user' ? '用户' : '助手';
+      head.appendChild(title);
+      if (node.children?.length){
+        const meta = document.createElement('span'); meta.className='meta'; meta.textContent = `(${node.children.length})`;
+        head.appendChild(meta);
+      }
       const pv = document.createElement('span'); pv.className='pv'; pv.textContent = preview(node.text);
-      item.append(badge,title,meta,pv); item.addEventListener('click', ()=>jumpTo(node));
+      textWrap.append(head, pv);
+      item.append(badge, textWrap);
+      item.addEventListener('click', ()=>jumpTo(node));
       return item;
     };
 
