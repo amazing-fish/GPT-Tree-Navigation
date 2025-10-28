@@ -73,8 +73,11 @@
     .gtt-node{padding:6px 6px 6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
     .gtt-node .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);margin-right:6px;opacity:.75}
-    .gtt-node .meta{opacity:.7;font-size:11px;margin-left:6px}
-    .gtt-node .pv{display:inline-block;opacity:.9;margin-left:6px;white-space:nowrap;max-width:calc(100% - 90px);overflow:hidden;text-overflow:ellipsis}
+    .gtt-node-label{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .gtt-node-label .badge{margin-right:0;font-size:9px}
+    .gtt-node-label .role{font-size:11px;font-weight:600}
+    .gtt-node .meta{opacity:.7;font-size:11px}
+    .gtt-node-preview{display:block;opacity:.9;margin-top:4px;line-height:1.45;word-break:break-word}
     .gtt-children{margin-left:14px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
@@ -540,11 +543,14 @@
       const item = document.createElement('div'); item.className = 'gtt-node'; item.dataset.nodeId = node.id; item.dataset.sig = node.sig; item.title = node.id + '\n\n' + (node.text||'');
       if (node.chainIds) item._chainIds = node.chainIds;
       if (node.chainSigs) item._chainSigs = node.chainSigs;
+      const label = document.createElement('div'); label.className = 'gtt-node-label';
       const badge = document.createElement('span'); badge.className='badge'; badge.textContent = node.role==='user'? 'U' : (node.role||'·');
-      const title = document.createElement('span'); title.textContent = node.role==='user' ? '用户' : '助手';
+      const title = document.createElement('span'); title.className = 'role'; title.textContent = node.role==='user' ? '用户' : 'Asst';
       const meta = document.createElement('span'); meta.className='meta'; meta.textContent = node.children?.length ? `(${node.children.length})` : '';
-      const pv = document.createElement('span'); pv.className='pv'; pv.textContent = preview(node.text);
-      item.append(badge,title,meta,pv); item.addEventListener('click', ()=>jumpTo(node));
+      label.append(badge,title);
+      if (meta.textContent) label.append(meta);
+      const previewEl = document.createElement('div'); previewEl.className='gtt-node-preview'; previewEl.textContent = preview(node.text);
+      item.append(label,previewEl); item.addEventListener('click', ()=>jumpTo(node));
       return item;
     };
 
