@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.4.2
+// @version      1.5.0
 // @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
@@ -69,16 +69,23 @@
     #gtt-body{display:flex;flex-direction:column;min-height:0}
     #gtt-search{margin:8px 10px;padding:6px 8px;border:1px solid var(--gtt-bd,#d0d7de);border-radius:8px;width:calc(100% - 20px);outline:none;background:var(--gtt-bg,#fff)}
     #gtt-pref{display:flex;gap:10px;align-items:center;padding:0 10px 8px;color:#555;flex-wrap:wrap}
-    #gtt-tree{overflow:auto;padding:8px 6px 10px}
-    .gtt-node{padding:6px 6px 6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative}
+    #gtt-tree{overflow:auto;padding:8px 6px 12px}
+    .gtt-node{--gtt-depth:0;--gtt-branch-color:var(--gtt-bd,#d0d7de);padding:8px 12px 8px calc(var(--gtt-depth)*12px + 16px);border-radius:10px;margin:4px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:4px;transition:background .2s ease}
+    .gtt-node::before,.gtt-node::after{content:"";position:absolute;left:calc(var(--gtt-depth)*12px + 8px);opacity:.55;pointer-events:none;display:none}
+    .gtt-node::before{top:10px;bottom:10px;width:1px;background:var(--gtt-branch-color)}
+    .gtt-node::after{top:18px;width:8px;border-top:1px solid var(--gtt-branch-color)}
+    .gtt-node.gtt-nested::before,.gtt-node.gtt-nested::after{display:block}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
-    .gtt-node .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);margin-right:6px;opacity:.75}
-    .gtt-node .meta{opacity:.7;font-size:11px;margin-left:6px}
-    .gtt-node .pv{display:inline-block;opacity:.9;margin-left:6px;white-space:nowrap;max-width:calc(100% - 90px);overflow:hidden;text-overflow:ellipsis}
-    .gtt-children{margin-left:14px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
+    .gtt-node .head{display:flex;align-items:center;gap:6px;font-size:11px;color:#5b6573}
+    .gtt-node .badge{display:inline-flex;align-items:center;justify-content:center;font-size:10px;padding:0 6px;line-height:18px;min-width:20px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);opacity:.75}
+    .gtt-node .title{font-weight:600;font-size:11px;letter-spacing:.02em}
+    .gtt-node .meta{opacity:.6;font-size:11px;margin-left:auto}
+    .gtt-node .pv{display:block;opacity:.9;margin:0;font-size:13px;line-height:1.55;white-space:normal;word-break:break-word}
+    .gtt-children{margin-left:0;border-left:none;padding-left:0}
+    .gtt-children.gtt-current-line .gtt-node{--gtt-branch-color:var(--gtt-cur,#fa8c16)}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
-    .gtt-node.gtt-current{background:rgba(250,140,22,.12);border-left:2px solid var(--gtt-cur,#fa8c16);padding-left:10px}
+    .gtt-node.gtt-current{background:rgba(250,140,22,.12);box-shadow:inset 2px 0 0 var(--gtt-cur,#fa8c16)}
     .gtt-node.gtt-current .badge{border-color:var(--gtt-cur,#fa8c16);color:var(--gtt-cur,#fa8c16);opacity:1}
     .gtt-node.gtt-current-leaf{box-shadow:0 0 0 2px rgba(250,140,22,.24) inset}
     .gtt-children.gtt-current-line{border-left:2px dashed var(--gtt-cur,#fa8c16)}
@@ -112,6 +119,9 @@
     @media (prefers-color-scheme: dark){
       :root{--gtt-bg:#0b0e14;--gtt-hd:#0f131a;--gtt-bd:#2b3240;--gtt-cur:#f59b4c;color-scheme:dark}
       #gtt-header .btn,#gtt-modal .btn,#gtt-fab{background:#0b0e14;color:#d1d7e0}
+      .gtt-node .head{color:#b3bdcc}
+      .gtt-node .badge{background:rgba(27,31,43,.6);border-color:rgba(125,136,159,.4)}
+      .gtt-node .pv{color:#d8dee9}
       .gtt-node:hover{background:rgba(120,152,255,.12)}
       .gtt-node.gtt-current{background:rgba(250,140,22,.18)}
     }
@@ -534,17 +544,25 @@
     const container = document.createDocumentFragment();
 
     const queue = [];
-    const pushList = (nodes, parent)=>{ for (const n of nodes){ queue.push({ node:n, parent }); } };
+    const pushList = (nodes, parent, depth)=>{ for (const n of nodes){ queue.push({ node:n, parent, depth }); } };
 
-    const createItem = (node)=>{
+    const createItem = (node, depth)=>{
+      const level = Number.isFinite(depth) ? depth : 0;
       const item = document.createElement('div'); item.className = 'gtt-node'; item.dataset.nodeId = node.id; item.dataset.sig = node.sig; item.title = node.id + '\n\n' + (node.text||'');
       if (node.chainIds) item._chainIds = node.chainIds;
       if (node.chainSigs) item._chainSigs = node.chainSigs;
-      const badge = document.createElement('span'); badge.className='badge'; badge.textContent = node.role==='user'? 'U' : (node.role||'·');
-      const title = document.createElement('span'); title.textContent = node.role==='user' ? '用户' : '助手';
+      const role = node.role || '';
+      const badge = document.createElement('span'); badge.className='badge'; badge.textContent = role==='user' ? 'U' : (role==='assistant' ? 'A' : (role ? role[0].toUpperCase() : '·'));
+      const head = document.createElement('div'); head.className = 'head';
+      const title = document.createElement('span'); title.className='title'; title.textContent = role==='user' ? '用户' : (role==='assistant' ? 'Asst' : (role || '未知'));
       const meta = document.createElement('span'); meta.className='meta'; meta.textContent = node.children?.length ? `(${node.children.length})` : '';
       const pv = document.createElement('span'); pv.className='pv'; pv.textContent = preview(node.text);
-      item.append(badge,title,meta,pv); item.addEventListener('click', ()=>jumpTo(node));
+      head.append(badge,title,meta);
+      item.append(head,pv);
+      item.style.setProperty('--gtt-depth', level);
+      if (level > 0){ item.classList.add('gtt-nested'); }
+      item.dataset.role = role;
+      item.addEventListener('click', ()=>jumpTo(node));
       return item;
     };
 
@@ -553,18 +571,18 @@
     container.appendChild(rootDiv);
 
     // 将根节点入队
-    pushList(treeData, rootDiv);
+    pushList(treeData, rootDiv, 0);
 
     const step = () => {
       let cnt = 0;
       while (cnt < CONFIG.RENDER_CHUNK && queue.length){
-        const { node, parent } = queue.shift();
-        const item = createItem(node);
+        const { node, parent, depth } = queue.shift();
+        const item = createItem(node, depth);
         parent.appendChild(item);
         stats.total++;
         if (node.children?.length){
           const kids = document.createElement('div'); kids.className='gtt-children'; parent.appendChild(kids);
-          pushList(node.children, kids);
+          pushList(node.children, kids, (Number.isFinite(depth) ? depth : 0) + 1);
         }
         cnt++;
       }
