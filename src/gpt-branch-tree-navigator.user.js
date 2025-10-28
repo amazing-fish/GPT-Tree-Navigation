@@ -240,7 +240,11 @@
         const url = typeof input==='string' ? input : input?.url || '';
         if (/\/backend-api\/conversation\//.test(url)) {
           const clone = res.clone(); const json = await clone.json();
-          if (json?.mapping) { LAST_MAPPING = json.mapping; buildTreeFromMapping(LAST_MAPPING); }
+          if (json?.mapping) {
+            ensurePanel();
+            LAST_MAPPING = json.mapping;
+            buildTreeFromMapping(LAST_MAPPING);
+          }
         }
       }catch(_) {}
       return res;
@@ -449,6 +453,8 @@
   function dedupBySig(ids, mapping){ const seen = new Set(); const out = []; for (const cid of ids){ const rec = mapping[cid]; if (!rec) continue; const role = rec?.message?.author?.role || 'assistant'; const text = normalize(getRecText(rec)); const sig = makeSig(role, text); if (!seen.has(sig)){ seen.add(sig); out.push(cid); } } return out; }
 
   function buildTreeFromMapping(mapping){
+    const treeEl = $('#gtt-tree');
+    if (!treeEl) return;
     const byId = mapping;
     const visibleIds = Object.keys(byId).filter(id => isVisibleRec(byId[id]));
 
@@ -506,7 +512,7 @@
     };
 
     const tree = roots.map(toNode).filter(Boolean);
-    renderTreeGradually($('#gtt-tree'), tree);
+    renderTreeGradually(treeEl, tree);
   }
 
   function buildTreeFromLinear(linear){
@@ -719,9 +725,9 @@
   async function rebuildTree(opts={}){
     ensureFab(); ensurePanel();
     if (opts.hard){ LAST_MAPPING=null; }
-    harvestLinearNodes(); // 先收集一次，确保 DOM_BY_SIG/ID 准备就绪
+    const linearNodes = harvestLinearNodes(); // 先收集一次，确保 DOM_BY_SIG/ID 准备就绪
     if (opts.forceFetch || !LAST_MAPPING){ LAST_MAPPING = await fetchMapping(); }
-    if (LAST_MAPPING) buildTreeFromMapping(LAST_MAPPING); else buildTreeFromLinear(harvestLinearNodes());
+    if (LAST_MAPPING) buildTreeFromMapping(LAST_MAPPING); else buildTreeFromLinear(linearNodes);
   }
 
   // 初始等待 main 出现
