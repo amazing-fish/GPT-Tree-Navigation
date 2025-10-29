@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.5.0
+// @version      1.5.1
 // @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
@@ -15,7 +15,9 @@
 
   /** ================= 配置 ================= **/
   const CONFIG = Object.freeze({
-    PANEL_WIDTH: 360,
+    PANEL_WIDTH_MIN: 320,
+    PANEL_WIDTH_VW: 32,
+    PANEL_WIDTH_MAX: 520,
     PREVIEW_MAX_CHARS: 200,
     HIGHLIGHT_MS: 1400,
     SCROLL_OFFSET: 80,
@@ -62,7 +64,9 @@
   Style.inject(`
     :root{--gtt-cur:#fa8c16;}
     #gtt-panel{
-      position:fixed;top:64px;right:12px;z-index:999999;width:${CONFIG.PANEL_WIDTH}px;
+      position:fixed;top:64px;right:12px;z-index:999999;
+      width:clamp(${CONFIG.PANEL_WIDTH_MIN}px, ${CONFIG.PANEL_WIDTH_VW}vw, min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px)));
+      max-width:min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px));
       max-height:calc(100vh - 84px);display:flex;flex-direction:column;overflow:hidden;
       border-radius:12px;border:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-bg,#fff);
       box-shadow:0 8px 28px rgba(0,0,0,.18);font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;
@@ -75,12 +79,14 @@
     #gtt-search{margin:8px 10px;padding:6px 8px;border:1px solid var(--gtt-bd,#d0d7de);border-radius:8px;width:calc(100% - 20px);outline:none;background:var(--gtt-bg,#fff)}
     #gtt-pref{display:flex;gap:10px;align-items:center;padding:0 10px 8px;color:#555;flex-wrap:wrap}
     #gtt-tree{overflow:auto;padding:8px 6px 10px}
-    .gtt-node{padding:6px 6px 6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative}
+    .gtt-node{padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:2px}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
-    .gtt-node .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);margin-right:6px;opacity:.75}
-    .gtt-node .meta{opacity:.7;font-size:11px;margin-left:6px}
-    .gtt-node .pv{display:inline-block;opacity:.9;margin-left:6px;white-space:nowrap;max-width:calc(100% - 90px);overflow:hidden;text-overflow:ellipsis}
-    .gtt-children{margin-left:14px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
+    .gtt-node .head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .gtt-node .badge{display:inline-flex;align-items:center;justify-content:center;font-size:10px;padding:1px 5px;border-radius:6px;border:1px solid var(--gtt-bd,#d0d7de);opacity:.75;min-width:18px}
+    .gtt-node .title{font-weight:600;word-break:break-word;flex:1 1 auto}
+    .gtt-node .meta{opacity:.65;font-size:10px;margin-left:auto;white-space:nowrap}
+    .gtt-node .pv{display:block;opacity:.88;margin:0;white-space:normal;word-break:break-word}
+    .gtt-children{margin-left:12px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:6px}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
     .gtt-node.gtt-current{background:rgba(250,140,22,.12);border-left:2px solid var(--gtt-cur,#fa8c16);padding-left:10px}
@@ -850,18 +856,25 @@
         item.title = `${node.id}\n\n${node.text || ''}`;
         if (node.chainIds) item._chainIds = node.chainIds;
         if (node.chainSigs) item._chainSigs = node.chainSigs;
+        const head = document.createElement('div');
+        head.className = 'head';
         const badge = document.createElement('span');
         badge.className = 'badge';
-        badge.textContent = node.role === 'user' ? 'U' : (node.role || '·');
+        badge.textContent = node.role === 'user'
+          ? 'U'
+          : (node.role === 'assistant' ? 'A' : (node.role || '·'));
         const title = document.createElement('span');
-        title.textContent = node.role === 'user' ? '用户' : '助手';
+        title.className = 'title';
+        title.textContent = node.role === 'user' ? '用户' : 'Asst';
         const meta = document.createElement('span');
         meta.className = 'meta';
-        meta.textContent = node.children?.length ? `(${node.children.length})` : '';
+        meta.textContent = node.children?.length ? `×${node.children.length}` : '';
         const pv = document.createElement('span');
         pv.className = 'pv';
         pv.textContent = preview(node.text);
-        item.append(badge, title, meta, pv);
+        head.append(badge, title);
+        if (meta.textContent) head.append(meta);
+        item.append(head, pv);
         item.addEventListener('click', () => Navigator.jumpTo(node));
         return item;
       };
