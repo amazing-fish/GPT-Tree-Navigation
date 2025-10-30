@@ -18,7 +18,6 @@
     PANEL_WIDTH_MIN: 320,
     PANEL_WIDTH_VW: 32,
     PANEL_WIDTH_MAX: 520,
-    PANEL_WIDTH_DEFAULT_MAX: 460,
     PANEL_WIDTH_STEP: 10,
     PREVIEW_MAX_CHARS: 200,
     HIGHLIGHT_MS: 1400,
@@ -67,25 +66,28 @@
     :root{--gtt-cur:#fa8c16;}
     #gtt-panel{
       position:fixed;top:64px;right:12px;z-index:999999;
-      width:clamp(${CONFIG.PANEL_WIDTH_MIN}px, ${CONFIG.PANEL_WIDTH_VW}vw, var(--gtt-panel-max, min(${CONFIG.PANEL_WIDTH_DEFAULT_MAX}px, calc(100vw - 24px))));
-      max-width:var(--gtt-panel-max, min(${CONFIG.PANEL_WIDTH_DEFAULT_MAX}px, calc(100vw - 24px)));
+      width:clamp(${CONFIG.PANEL_WIDTH_MIN}px, var(--gtt-panel-width, ${CONFIG.PANEL_WIDTH_VW}vw), min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px)));
+      max-width:clamp(${CONFIG.PANEL_WIDTH_MIN}px, var(--gtt-panel-width, ${CONFIG.PANEL_WIDTH_VW}vw), min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px)));
       max-height:calc(100vh - 84px);display:flex;flex-direction:column;overflow:hidden;
       border-radius:12px;border:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-bg,#fff);
       box-shadow:0 8px 28px rgba(0,0,0,.18);font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;
       user-select:none
     }
-    #gtt-header{display:flex;gap:8px;align-items:center;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa)}
+    #gtt-header{display:flex;gap:8px;align-items:center;padding:10px 10px 10px 18px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa)}
     #gtt-header .title{font-weight:700;flex:1;cursor:move}
     #gtt-header .btn{border:1px solid var(--gtt-bd,#d0d7de);background:#fff;cursor:pointer;padding:4px 8px;border-radius:8px;font-size:12px}
     #gtt-body{display:flex;flex-direction:column;min-height:0}
-    #gtt-search{margin:8px 10px;padding:6px 8px;border:1px solid var(--gtt-bd,#d0d7de);border-radius:8px;width:calc(100% - 20px);outline:none;background:var(--gtt-bg,#fff)}
-    #gtt-pref{display:flex;gap:10px;align-items:center;padding:0 10px 8px;color:#555;flex-wrap:wrap}
+    #gtt-search{margin:8px 10px 8px 18px;padding:6px 8px;border:1px solid var(--gtt-bd,#d0d7de);border-radius:8px;width:calc(100% - 28px);outline:none;background:var(--gtt-bg,#fff)}
+    #gtt-resize{position:absolute;top:0;left:0;width:8px;height:100%;cursor:ew-resize;display:flex;align-items:center;justify-content:center;z-index:1;touch-action:none}
+    #gtt-resize::after{content:'';width:2px;height:32px;border-radius:1px;background:var(--gtt-bd,#d0d7de);opacity:.55;transition:opacity .2s ease}
+    #gtt-resize:hover::after{opacity:.85}
+    #gtt-pref{display:flex;gap:10px;align-items:center;padding:0 10px 8px 18px;color:#555;flex-wrap:wrap}
     #gtt-pref .gtt-pref-row{display:flex;align-items:center;gap:8px;flex:1 1 100%;font-size:12px}
     #gtt-pref .gtt-pref-title{white-space:nowrap;opacity:.8}
     #gtt-pref .gtt-pref-value{min-width:44px;text-align:right;opacity:.8}
     #gtt-pref input[type="range"]{flex:1 1 auto}
     #gtt-pref .gtt-pref-reset{border:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-bg,#fff);color:inherit;padding:2px 6px;border-radius:6px;font-size:11px;cursor:pointer}
-    #gtt-tree{overflow:auto;padding:8px 6px 10px}
+    #gtt-tree{overflow:auto;padding:8px 6px 10px 18px}
     .gtt-node{padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:2px}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
     .gtt-node .head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
@@ -511,8 +513,9 @@
       return Math.min(Math.max(CONFIG.PANEL_WIDTH_MIN, Math.round(value)), max);
     }
 
-    function getDefaultMax() {
-      return Math.min(getViewportWidthLimit(), CONFIG.PANEL_WIDTH_DEFAULT_MAX);
+    function getAutoWidth() {
+      const vwWidth = Math.round(window.innerWidth * (CONFIG.PANEL_WIDTH_VW / 100));
+      return clampWidth(vwWidth);
     }
 
     function updateWidthRangeBounds() {
@@ -526,24 +529,25 @@
         widthValueEl.textContent = Number.isFinite(value) ? `${clampWidth(value)}px` : '自动';
       }
       if (widthRangeEl) {
-        const fallback = getDefaultMax();
+        const fallback = getAutoWidth();
         const displayValue = Number.isFinite(value) ? clampWidth(value) : fallback;
         widthRangeEl.value = String(displayValue);
       }
     }
 
-    function syncWidth(value = Prefs.get('width')) {
+    function syncWidth(value = Prefs.get('width'), { preview = false } = {}) {
       const panel = DOM.query('#gtt-panel');
-      if (!panel) return;
+      if (!panel) return null;
       updateWidthRangeBounds();
       if (Number.isFinite(value)) {
         const clamped = clampWidth(value);
-        panel.style.setProperty('--gtt-panel-max', `${clamped}px`);
+        panel.style.setProperty('--gtt-panel-width', `${clamped}px`);
         updateWidthDisplay(clamped);
-      } else {
-        panel.style.removeProperty('--gtt-panel-max');
-        updateWidthDisplay(null);
+        return clamped;
       }
+      panel.style.removeProperty('--gtt-panel-width');
+      updateWidthDisplay(null);
+      return null;
     }
 
     function setWidth(value, { silent = false } = {}) {
@@ -583,6 +587,7 @@
       const panel = document.createElement('div');
       panel.id = 'gtt-panel';
       panel.innerHTML = `
+        <div id="gtt-resize" title="拖拽调整宽度"></div>
         <div id="gtt-header">
           <div class="title" id="gtt-drag">GPT Tree</div>
           <button class="btn" id="gtt-btn-min" title="最小化/还原（Alt+M）">最小化</button>
@@ -630,6 +635,7 @@
       widthRangeEl = DOM.query('#gtt-width-range', panel);
       widthValueEl = DOM.query('#gtt-width-value', panel);
       const widthResetBtn = DOM.query('#gtt-width-reset', panel);
+      const resizeHandle = DOM.query('#gtt-resize', panel);
 
       if (btnMin) btnMin.addEventListener('click', () => setMinimized(!Prefs.get('minimized')));
       if (btnHide) btnHide.addEventListener('click', () => setHidden(true));
@@ -651,7 +657,7 @@
       if (widthRangeEl) {
         widthRangeEl.addEventListener('input', (e) => {
           const value = Number(e.target?.value);
-          if (Number.isFinite(value)) syncWidth(value);
+          if (Number.isFinite(value)) syncWidth(value, { preview: true });
         });
         widthRangeEl.addEventListener('change', (e) => {
           setWidth(Number(e.target?.value));
@@ -661,6 +667,7 @@
       if (widthResetBtn) widthResetBtn.addEventListener('click', () => resetWidth());
 
       if (dragHandle) enableDrag(panel, dragHandle);
+      if (resizeHandle) enableResize(panel, resizeHandle);
     }
 
     function applyState(panel) {
@@ -716,6 +723,82 @@
         };
         document.addEventListener('mousemove', onMove);
         document.addEventListener('mouseup', onUp, { once: true });
+      });
+    }
+
+    function enableResize(panel, handle) {
+      if (!panel || !handle) return;
+      let resizing = false;
+      let startX = 0;
+      let startWidth = 0;
+      let previewWidth = null;
+      const cleanup = (onMove, onUp) => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.removeEventListener('touchmove', onMove, true);
+        document.removeEventListener('touchend', onUp, true);
+        document.removeEventListener('touchcancel', onUp, true);
+      };
+
+      const startResize = (clientX) => {
+        resizing = true;
+        startX = clientX;
+        startWidth = panel.getBoundingClientRect().width;
+        previewWidth = startWidth;
+        const prevUserSelect = document.body.style.userSelect;
+        const prevCursor = document.body.style.cursor;
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'ew-resize';
+
+        const handleMove = (evt) => {
+          if (!resizing) return;
+          if (evt?.cancelable) evt.preventDefault();
+          const point = evt.touches ? evt.touches[0] : evt;
+          if (!point) return;
+          const delta = startX - point.clientX;
+          const next = clampWidth(startWidth + delta);
+          previewWidth = next;
+          syncWidth(next, { preview: true });
+        };
+
+        const handleUp = () => {
+          if (!resizing) return;
+          resizing = false;
+          cleanup(handleMove, handleUp);
+          document.body.style.userSelect = prevUserSelect;
+          document.body.style.cursor = prevCursor;
+          const stored = Prefs.get('width');
+          if (previewWidth != null && Math.abs(previewWidth - startWidth) >= 1) {
+            setWidth(previewWidth);
+          } else if (!Number.isFinite(stored)) {
+            syncWidth(null);
+          } else {
+            syncWidth(stored);
+          }
+        };
+
+        document.addEventListener('mousemove', handleMove);
+        document.addEventListener('mouseup', handleUp, { once: true });
+        document.addEventListener('touchmove', handleMove, { capture: true, passive: false });
+        document.addEventListener('touchend', handleUp, { once: true, capture: true });
+        document.addEventListener('touchcancel', handleUp, { once: true, capture: true });
+      };
+
+      handle.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        startResize(e.clientX);
+      });
+
+      handle.addEventListener('touchstart', (e) => {
+        const touch = e.touches?.[0];
+        if (!touch) return;
+        e.preventDefault();
+        startResize(touch.clientX);
+      }, { passive: false });
+
+      handle.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        resetWidth();
       });
     }
 
