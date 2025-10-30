@@ -15,10 +15,13 @@
 
   /** ================= 配置 ================= **/
   const CONFIG = Object.freeze({
-    PANEL_WIDTH_MIN: 320,
+    PANEL_WIDTH_MIN: 500,
     PANEL_WIDTH_MAX: 500,
-    PANEL_WIDTH_STEP: 10,
-    PREVIEW_MAX_CHARS: 200,
+    PANEL_WIDTH_STEP: 1,
+    CARD_WIDTH_MAX: 400,
+    CARD_INDENT: 25,
+    PREVIEW_FULL_LINES: 2,
+    PREVIEW_TAIL_CHARS: 10,
     HIGHLIGHT_MS: 1400,
     SCROLL_OFFSET: 80,
     LS_KEY: 'gtt_prefs_v3',
@@ -65,8 +68,9 @@
     :root{--gtt-cur:#fa8c16;}
     #gtt-panel{
       position:fixed;top:64px;right:12px;z-index:999999;
-      width:clamp(${CONFIG.PANEL_WIDTH_MIN}px, var(--gtt-panel-width, ${CONFIG.PANEL_WIDTH_MAX}px), min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px)));
-      max-width:clamp(${CONFIG.PANEL_WIDTH_MIN}px, var(--gtt-panel-width, ${CONFIG.PANEL_WIDTH_MAX}px), min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px)));
+      width:min(var(--gtt-panel-width, ${CONFIG.PANEL_WIDTH_MAX}px), calc(100vw - 24px));
+      max-width:min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px));
+      min-width:min(${CONFIG.PANEL_WIDTH_MIN}px, calc(100vw - 24px));
       max-height:calc(100vh - 84px);display:flex;flex-direction:column;overflow:hidden;
       border-radius:12px;border:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-bg,#fff);
       box-shadow:0 8px 28px rgba(0,0,0,.18);font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;
@@ -87,7 +91,7 @@
     #gtt-pref input[type="range"]{flex:1 1 auto}
     #gtt-pref .gtt-pref-reset{border:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-bg,#fff);color:inherit;padding:2px 6px;border-radius:6px;font-size:11px;cursor:pointer}
     #gtt-tree{overflow:auto;overflow-x:auto;padding:8px 12px 10px 18px;max-width:calc(${CONFIG.PANEL_WIDTH_MAX}px - 30px);flex:1 1 auto;min-height:0;width:100%;max-height:var(--gtt-tree-max-height,360px)}
-    .gtt-node{padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:4px;width:min(100%,400px);max-width:400px;flex-shrink:0}
+    .gtt-node{padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:4px;width:100%;max-width:${CONFIG.CARD_WIDTH_MAX}px;flex-shrink:0;box-sizing:border-box}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
     .gtt-node .head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
     .gtt-node .badge{display:inline-flex;align-items:center;justify-content:center;font-size:10px;padding:1px 5px;border-radius:6px;border:1px solid var(--gtt-bd,#d0d7de);opacity:.75;min-width:18px}
@@ -96,7 +100,7 @@
     .gtt-node .pv{display:flex;flex-direction:column;gap:2px;opacity:.88;margin:0;white-space:normal;word-break:break-word}
     .gtt-node .pv-line{display:block}
     .gtt-node .pv-line-more{font-size:12px;opacity:.7}
-    .gtt-children{margin-left:25px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:10px}
+    .gtt-children{margin-left:${CONFIG.CARD_INDENT}px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:10px}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
     .gtt-node.gtt-current{background:rgba(250,140,22,.12);border-left:2px solid var(--gtt-cur,#fa8c16);padding-left:10px}
@@ -257,6 +261,44 @@
       return html;
     }
   };
+
+  const Preview = (() => {
+    const FULL_LINES = Math.max(0, Number(CONFIG.PREVIEW_FULL_LINES) || 0);
+    const TAIL_CHARS = Math.max(0, Number(CONFIG.PREVIEW_TAIL_CHARS) || 0);
+
+    function sliceUnits(value, count) {
+      if (!Number.isFinite(count) || count <= 0) return '';
+      return Array.from(value || '').slice(0, count).join('');
+    }
+
+    function lines(rawText) {
+      const normalized = Text
+        .normalizeForPreview(rawText || '')
+        .split('\n')
+        .map(segment => Text.normalize(segment))
+        .filter(Boolean);
+
+      if (!normalized.length) return ['(空)'];
+
+      const result = [];
+      const take = FULL_LINES > 0 ? Math.min(FULL_LINES, normalized.length) : Math.min(2, normalized.length);
+      for (let i = 0; i < take; i++) {
+        result.push(normalized[i]);
+      }
+
+      if (normalized.length > take) {
+        const rest = Text.normalize(normalized.slice(take).join(' '));
+        if (rest) {
+          const snippet = TAIL_CHARS > 0 ? sliceUnits(rest, TAIL_CHARS) : '';
+          result.push(`${snippet}...`);
+        }
+      }
+
+      return result;
+    }
+
+    return { lines };
+  })();
 
   const Timing = {
     rafIdle(fn, ms = CONFIG.RENDER_IDLE_MS) { return setTimeout(fn, ms); },
@@ -958,28 +1000,6 @@
 
   /** ================= 构树 ================= **/
   const Tree = (() => {
-    function previewLines(text, limit = CONFIG.PREVIEW_MAX_CHARS) {
-      const normalizedLines = Text.normalizeForPreview(text || '')
-        .split('\n')
-        .map(line => Text.normalize(line))
-        .filter(Boolean);
-      if (!normalizedLines.length) return ['(空)'];
-      const result = [];
-      const takeCount = Math.min(2, normalizedLines.length);
-      for (let i = 0; i < takeCount; i++) {
-        const line = normalizedLines[i];
-        result.push(Text.truncate(line, limit));
-      }
-      if (normalizedLines.length > 2) {
-        const rest = Text.normalize(normalizedLines.slice(2).join(' '));
-        if (rest) {
-          const snippet = Text.truncate(rest, 10);
-          result.push(`${snippet}...`);
-        }
-      }
-      return result;
-    }
-
     function isToolishRole(role) {
       return role === 'tool' || role === 'system' || role === 'function';
     }
@@ -1143,7 +1163,7 @@
         meta.textContent = node.children?.length ? `×${node.children.length}` : '';
         const pv = document.createElement('span');
         pv.className = 'pv';
-        const pvLines = previewLines(node.text);
+        const pvLines = Preview.lines(node.text);
         pvLines.forEach((line, idx) => {
           const lineEl = document.createElement('span');
           lineEl.className = 'pv-line';
