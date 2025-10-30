@@ -15,8 +15,9 @@
 
   /** *************************** 配置 *************************** */
   const CONFIG = Object.freeze({
-    PANEL_WIDTH_MIN: 500,
+    PANEL_WIDTH_MIN: 350,
     PANEL_WIDTH_MAX: 500,
+    PANEL_WIDTH_DEFAULT: 400,
     PANEL_WIDTH_STEP: 1,
     CARD_WIDTH_MAX: 400,
     CARD_INDENT: 25,
@@ -69,7 +70,7 @@
     :root{--gtt-cur:#fa8c16;}
     #gtt-panel{
       position:fixed;top:64px;right:12px;z-index:999999;
-      width:min(var(--gtt-panel-width, ${CONFIG.PANEL_WIDTH_MAX}px), calc(100vw - 24px));
+      width:min(var(--gtt-panel-width, ${CONFIG.PANEL_WIDTH_DEFAULT}px), calc(100vw - 24px));
       max-width:min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px));
       min-width:min(${CONFIG.PANEL_WIDTH_MIN}px, calc(100vw - 24px));
       max-height:calc(100vh - 84px);display:flex;flex-direction:column;overflow:hidden;
@@ -803,7 +804,7 @@
       return Math.min(CONFIG.PANEL_WIDTH_MAX, viewportLimit);
     }
     getAutoWidth() {
-      return this.clampWidth(CONFIG.PANEL_WIDTH_MAX);
+      return this.clampWidth(CONFIG.PANEL_WIDTH_DEFAULT);
     }
     syncWidth(value = this.prefs.get("width"), { preview = false } = {}) {
       if (!this.panelEl) return null;
