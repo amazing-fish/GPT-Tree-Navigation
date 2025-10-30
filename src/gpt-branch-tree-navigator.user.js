@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.5.6
+// @version      1.6.0
 // @description  树状分支 + 预览 + 一键跳转；支持隐藏与悬浮按钮恢复；快捷键 Alt+T；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
@@ -13,7 +13,7 @@
 (() => {
   "use strict";
 
-  /** ================= 配置 ================= **/
+  /** *************************** 配置 *************************** */
   const CONFIG = Object.freeze({
     PANEL_WIDTH_MIN: 500,
     PANEL_WIDTH_MAX: 500,
@@ -24,25 +24,25 @@
     PREVIEW_TAIL_CHARS: 10,
     HIGHLIGHT_MS: 1400,
     SCROLL_OFFSET: 80,
-    LS_KEY: 'gtt_prefs_v3',
+    LS_KEY: "gtt_prefs_v3",
     RENDER_CHUNK: 120,
     RENDER_IDLE_MS: 12,
     OBS_DEBOUNCE_MS: 250,
     SIG_TEXT_LEN: 200,
     SELECTORS: {
-      scrollRoot: 'main',
+      scrollRoot: "main",
       messageBlocks: [
-        '[data-message-author-role]',
-        'article:has(.markdown)',
-        'main [data-testid^="conversation-turn"]',
-        'main .group.w-full',
-        'main [data-message-id]'
-      ].join(','),
+        "[data-message-author-role]",
+        "article:has(.markdown)",
+        "main [data-testid^=\"conversation-turn\"]",
+        "main .group.w-full",
+        "main [data-message-id]"
+      ].join(","),
       messageText: [
-        '.markdown', '.prose',
-        '[data-message-author-role] .whitespace-pre-wrap',
-        '[data-message-author-role]'
-      ].join(','),
+        ".markdown", ".prose",
+        "[data-message-author-role] .whitespace-pre-wrap",
+        "[data-message-author-role]"
+      ].join(","),
     },
     ENDPOINTS: (cid) => ({
       get: [
@@ -52,19 +52,20 @@
     })
   });
 
-  /** ================= 样式 ================= **/
-  const Style = {
-    inject(css) {
-      try { GM_addStyle(css); }
-      catch (_) {
-        const style = document.createElement('style');
-        style.textContent = css;
+  /** *************************** 样式 *************************** */
+  class StyleManager {
+    static ensure(cssText) {
+      try {
+        GM_addStyle(cssText);
+      } catch (_) {
+        const style = document.createElement("style");
+        style.textContent = cssText;
         document.head.appendChild(style);
       }
     }
-  };
+  }
 
-  Style.inject(`
+  const PANEL_STYLE = `
     :root{--gtt-cur:#fa8c16;}
     #gtt-panel{
       position:fixed;top:64px;right:12px;z-index:999999;
@@ -107,7 +108,6 @@
     .gtt-node.gtt-current .badge{border-color:var(--gtt-cur,#fa8c16);color:var(--gtt-cur,#fa8c16);opacity:1}
     .gtt-node.gtt-current-leaf{box-shadow:0 0 0 2px rgba(250,140,22,.24) inset}
     .gtt-children.gtt-current-line{border-left:2px dashed var(--gtt-cur,#fa8c16)}
-
     #gtt-modal{position:fixed;inset:0;z-index:1000000;background:rgba(0,0,0,.42);display:none;align-items:center;justify-content:center}
     #gtt-modal .card{max-width:880px;max-height:80vh;overflow:auto;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25)}
     #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa);position:sticky;top:0;z-index:1}
@@ -120,7 +120,6 @@
     #gtt-modal .bd ul{margin:0 0 12px 18px;padding:0 0 0 12px}
     #gtt-modal .bd li{margin:4px 0}
     #gtt-modal .btn{border:1px solid var(--gtt-bd,#d0d7de);background:#fff;cursor:pointer;padding:4px 8px;border-radius:8px;font-size:12px}
-
     #gtt-fab{
       position:fixed;right:12px;bottom:16px;z-index:999999;display:none;align-items:center;gap:8px;
       padding:8px 12px;border-radius:999px;border:1px solid var(--gtt-bd,#d0d7de);
@@ -128,91 +127,94 @@
     }
     #gtt-fab .dot{width:8px;height:8px;border-radius:50%;background:#5865f2}
     #gtt-fab .txt{font-weight:600}
-
     @media (prefers-color-scheme: dark){
       :root{--gtt-bg:#0b0e14;--gtt-hd:#0f131a;--gtt-bd:#2b3240;--gtt-cur:#f59b4c;color-scheme:dark}
       #gtt-header .btn,#gtt-modal .btn,#gtt-fab{background:#0b0e14;color:#d1d7e0}
       .gtt-node:hover{background:rgba(120,152,255,.12)}
       .gtt-node.gtt-current{background:rgba(250,140,22,.18)}
     }
-  `);
+  `;
 
-  /** ================= 工具 ================= **/
-  const DOM = {
-    query(selector, root = document) { return root.querySelector(selector); },
-    queryAll(selector, root = document) { return Array.from(root.querySelectorAll(selector)); },
-  };
+  StyleManager.ensure(PANEL_STYLE);
 
-  const Text = {
-    normalize(value) {
-      return (value || '').replace(/\u200b/g, '').replace(/\s+/g, ' ').trim();
-    },
-    normalizeForPreview(value) {
-      return (value || '').replace(/\u200b/g, '').replace(/\r\n?/g, '\n');
-    },
-    truncate(value, maxChars) {
-      if (!value) return '';
-      if (!Number.isFinite(maxChars) || maxChars <= 0) return value;
+  /** *************************** 基础工具 *************************** */
+  class DOMUtils {
+    static query(selector, root = document) { return root.querySelector(selector); }
+    static queryAll(selector, root = document) { return Array.from(root.querySelectorAll(selector)); }
+  }
+
+  class TextUtils {
+    static normalize(value) {
+      return (value || "").replace(/\u200b/g, "").replace(/\s+/g, " ").trim();
+    }
+    static normalizeForPreview(value) {
+      return (value || "").replace(/\u200b/g, "").replace(/\r\n?/g, "\n");
+    }
+    static truncateUnits(value, length) {
+      if (!value) return "";
+      if (!Number.isFinite(length) || length <= 0) return value;
       const units = Array.from(value);
-      if (units.length <= maxChars) return value;
-      return units.slice(0, maxChars).join('');
+      if (units.length <= length) return value;
+      return units.slice(0, length).join("");
     }
-  };
+  }
 
-  const Hash = {
-    of(value) {
-      const input = value || '';
-      let h = 0;
+  class HashUtils {
+    static of(value) {
+      const input = value || "";
+      let hash = 0;
       for (let i = 0; i < input.length; i++) {
-        h = ((h << 5) - h + input.charCodeAt(i)) | 0;
+        hash = ((hash << 5) - hash + input.charCodeAt(i)) | 0;
       }
-      return (h >>> 0).toString(36);
+      return (hash >>> 0).toString(36);
     }
-  };
+  }
 
-  const HTML = {
-    ESCAPES: { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" },
-    escape(value = '') {
-      return value.replace(/[&<>'"]/g, ch => HTML.ESCAPES[ch] || ch);
-    },
-    escapeAttr(value = '') {
-      return HTML.escape(value).replace(/`/g, '&#96;');
-    },
-    formatInline(text = '') {
-      let out = HTML.escape(text);
-      out = out.replace(/`([^`]+)`/g, (_m, code) => `<code>${code}</code>`);
-      out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url) => `<a href="${HTML.escapeAttr(url)}" target="_blank" rel="noreferrer noopener">${label}</a>`);
-      const codeHolders = [];
-      out = out.replace(/<code>[^<]*<\/code>/g, (match) => {
-        codeHolders.push(match);
-        return `\uFFF0${codeHolders.length - 1}\uFFF1`;
-      });
-      out = out.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-      out = out.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
-      out = out.replace(/(\s|^)\*([^*\n]+)\*(?=\s|[\.,!?:;\)\]\}“”"'`]|$)/g, (_m, pre, body) => `${pre}<em>${body}</em>`);
-      out = out.replace(/(\s|^)_(?!_)([^_\n]+)_(?=\s|[\.,!?:;\)\]\}“”"'`]|$)/g, (_m, pre, body) => `${pre}<em>${body}</em>`);
-      out = out.replace(/\uFFF0(\d+)\uFFF1/g, (_m, idx) => codeHolders[Number(idx)]);
+  class HTMLUtils {
+    static get ESCAPES() {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+    }
+    static escape(text = "") {
+      return text.replace(/[&<>'"]/g, (ch) => HTMLUtils.ESCAPES[ch] || ch);
+    }
+    static escapeAttr(text = "") {
+      return HTMLUtils.escape(text).replace(/`/g, "&#96;");
+    }
+    static formatInline(text = "") {
+      const holders = [];
+      let out = HTMLUtils.escape(text)
+        .replace(/`([^`]+)`/g, (_m, code) => `<code>${code}</code>`)
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url) => `<a href="${HTMLUtils.escapeAttr(url)}" target="_blank" rel="noreferrer noopener">${label}</a>`)
+        .replace(/<code>[^<]*<\/code>/g, (match) => { holders.push(match); return `\uFFF0${holders.length - 1}\uFFF1`; })
+        .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/__([^_\n]+)__/g, "<strong>$1</strong>")
+        .replace(/(\s|^)\*([^*\n]+)\*(?=\s|[\.,!?:;\)\]\}“”"'`]|$)/g, (_m, pre, body) => `${pre}<em>${body}</em>`)
+        .replace(/(\s|^)_(?!_)([^_\n]+)_(?=\s|[\.,!?:;\)\]\}“”"'`]|$)/g, (_m, pre, body) => `${pre}<em>${body}</em>`);
+      out = out.replace(/\uFFF0(\d+)\uFFF1/g, (_m, idx) => holders[Number(idx)]);
       return out;
     }
-  };
+  }
 
-  const Markdown = {
-    renderLite(raw = '') {
-      const text = Text.normalizeForPreview(raw || '').trimEnd();
-      if (!text) return '<p>(空)</p>';
-      const lines = text.split('\n');
-      let html = '';
+  class MarkdownRenderer {
+    static renderLite(raw = "") {
+      const text = TextUtils.normalizeForPreview(raw || "").trimEnd();
+      if (!text) return "<p>(空)</p>";
+      const lines = text.split("\n");
+      const html = [];
       let inList = false;
       let codeBuffer = null;
-      let codeLang = '';
-      const flushList = () => { if (inList) { html += '</ul>'; inList = false; } };
+      let codeLang = "";
+      const flushList = () => {
+        if (inList) html.push("</ul>");
+        inList = false;
+      };
       const flushCode = () => {
         if (!codeBuffer) return;
-        const cls = codeLang ? ` class="lang-${HTML.escapeAttr(codeLang)}"` : '';
-        const body = codeBuffer.map(HTML.escape).join('\n');
-        html += `<pre><code${cls}>${body}</code></pre>`;
+        const cls = codeLang ? ` class="lang-${HTMLUtils.escapeAttr(codeLang)}"` : "";
+        const body = codeBuffer.map(HTMLUtils.escape).join("\n");
+        html.push(`<pre><code${cls}>${body}</code></pre>`);
         codeBuffer = null;
-        codeLang = '';
+        codeLang = "";
       };
       for (const line of lines) {
         const trimmed = line.trim();
@@ -232,231 +234,220 @@
         }
         if (!trimmed) {
           flushList();
-          html += '<br>';
+          html.push("<br>");
           continue;
         }
         const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
         if (heading) {
           flushList();
           const level = heading[1].length;
-          html += `<h${level}>${HTML.formatInline(heading[2])}</h${level}>`;
+          html.push(`<h${level}>${HTMLUtils.formatInline(heading[2])}</h${level}>`);
           continue;
         }
         const listItem = line.match(/^\s*[-*+]\s+(.*)$/);
         if (listItem) {
           if (!inList) {
-            html += '<ul>';
+            html.push("<ul>");
             inList = true;
           }
-          html += `<li>${HTML.formatInline(listItem[1])}</li>`;
+          html.push(`<li>${HTMLUtils.formatInline(listItem[1])}</li>`);
           continue;
         }
         flushList();
-        html += `<p>${HTML.formatInline(line)}</p>`;
+        html.push(`<p>${HTMLUtils.formatInline(line)}</p>`);
       }
       flushCode();
       flushList();
-      return html;
+      return html.join("");
     }
-  };
+  }
 
-  const Preview = (() => {
-    const FULL_LINES = Math.max(0, Number(CONFIG.PREVIEW_FULL_LINES) || 0);
-    const TAIL_CHARS = Math.max(0, Number(CONFIG.PREVIEW_TAIL_CHARS) || 0);
-
-    function sliceUnits(value, count) {
-      if (!Number.isFinite(count) || count <= 0) return '';
-      return Array.from(value || '').slice(0, count).join('');
-    }
-
-    function lines(rawText) {
-      const normalized = Text
-        .normalizeForPreview(rawText || '')
-        .split('\n')
-        .map(segment => Text.normalize(segment))
+  class PreviewBuilder {
+    static lines(rawText) {
+      const normalized = TextUtils
+        .normalizeForPreview(rawText || "")
+        .split("\n")
+        .map((segment) => TextUtils.normalize(segment))
         .filter(Boolean);
-
-      if (!normalized.length) return ['(空)'];
-
+      if (!normalized.length) return ["(空)"];
+      const take = CONFIG.PREVIEW_FULL_LINES > 0
+        ? Math.min(CONFIG.PREVIEW_FULL_LINES, normalized.length)
+        : Math.min(2, normalized.length);
       const result = [];
-      const take = FULL_LINES > 0 ? Math.min(FULL_LINES, normalized.length) : Math.min(2, normalized.length);
       for (let i = 0; i < take; i++) {
         result.push(normalized[i]);
       }
-
       if (normalized.length > take) {
-        const rest = Text.normalize(normalized.slice(take).join(' '));
+        const rest = TextUtils.normalize(normalized.slice(take).join(" "));
         if (rest) {
-          const snippet = TAIL_CHARS > 0 ? sliceUnits(rest, TAIL_CHARS) : '';
+          const snippet = CONFIG.PREVIEW_TAIL_CHARS > 0
+            ? TextUtils.truncateUnits(rest, CONFIG.PREVIEW_TAIL_CHARS)
+            : "";
           result.push(`${snippet}...`);
         }
       }
-
       return result;
     }
+  }
 
-    return { lines };
-  })();
+  class PreferenceStore {
+    constructor(key, defaults) {
+      this.key = key;
+      this.defaults = { ...defaults };
+      this.state = this.load();
+    }
+    load() {
+      try {
+        const raw = localStorage.getItem(this.key) || localStorage.getItem("gtt_prefs_v2");
+        const parsed = raw ? JSON.parse(raw) : {};
+        return { ...this.defaults, ...parsed };
+      } catch (_) {
+        return { ...this.defaults };
+      }
+    }
+    snapshot() { return { ...this.state }; }
+    get(key) { return this.state[key]; }
+    set(key, value, { silent = false } = {}) {
+      this.state = { ...this.state, [key]: value };
+      if (!silent) this.save();
+    }
+    assign(patch, { silent = false } = {}) {
+      this.state = { ...this.state, ...patch };
+      if (!silent) this.save();
+    }
+    save() {
+      try {
+        localStorage.setItem(this.key, JSON.stringify(this.state));
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  }
 
-  const Timing = {
-    rafIdle(fn, ms = CONFIG.RENDER_IDLE_MS) { return setTimeout(fn, ms); },
-    debounce(fn, wait) {
-      let timer;
+  class IdleScheduler {
+    static rafIdle(fn, ms = CONFIG.RENDER_IDLE_MS) {
+      return setTimeout(fn, ms);
+    }
+    static debounce(fn, wait) {
+      let timer = null;
       return (...args) => {
         clearTimeout(timer);
         timer = setTimeout(() => fn(...args), wait);
       };
     }
-  };
+  }
 
-  const Location = {
-    getConversationId() {
-      const match = location.pathname.match(/\/c\/([a-z0-9-]{10,})/i) || [];
-      return match[1] || null;
+  class Signature {
+    static create(role, text) {
+      return (role || "assistant") + "|" + HashUtils.of(TextUtils.normalize(text).slice(0, CONFIG.SIG_TEXT_LEN));
     }
-  };
+  }
 
-  const Signature = {
-    create(role, text) {
-      return (role || 'assistant') + '|' + Hash.of(Text.normalize(text).slice(0, CONFIG.SIG_TEXT_LEN));
+  class BranchState {
+    constructor() {
+      this.reset();
     }
-  };
-
-  /** ================= 偏好 ================= **/
-  const Prefs = (() => {
-    const defaults = { hidden: false, pos: null, width: null };
-
-    function load() {
-      try {
-        const raw = localStorage.getItem(CONFIG.LS_KEY) || localStorage.getItem('gtt_prefs_v2');
-        const parsed = raw ? JSON.parse(raw) : {};
-        return { ...defaults, ...parsed };
-      } catch (_) {
-        return { ...defaults };
+    reset() {
+      this.mapping = null;
+      this.latestLinear = [];
+      this.domBySig = new Map();
+      this.domById = new Map();
+      this.currentBranchIds = new Set();
+      this.currentBranchSigs = new Set();
+      this.currentBranchLeafId = null;
+      this.currentBranchLeafSig = null;
+    }
+    setMapping(mapping) {
+      this.mapping = mapping || null;
+    }
+    collectFromDom() {
+      const blocks = DOMUtils.queryAll(CONFIG.SELECTORS.messageBlocks);
+      const result = [];
+      const ids = new Set();
+      const sigs = new Set();
+      const domBySig = new Map();
+      const domById = new Map();
+      for (const el of blocks) {
+        const textEl = DOMUtils.query(CONFIG.SELECTORS.messageText, el) || el;
+        const raw = (textEl?.innerText || "").trim();
+        const text = TextUtils.normalize(raw);
+        if (!text) continue;
+        let role = el.getAttribute("data-message-author-role");
+        if (!role) role = el.querySelector(".markdown,.prose") ? "assistant" : "user";
+        const messageId = el.getAttribute("data-message-id")
+          || el.dataset?.messageId
+          || DOMUtils.query("[data-message-id]", el)?.getAttribute("data-message-id")
+          || (el.id?.startsWith("conversation-turn-") ? el.id.split("conversation-turn-")[1] : null);
+        const id = messageId ? messageId : (`lin-${HashUtils.of(text.slice(0, 80))}`);
+        const sig = Signature.create(role, text);
+        const record = { id, role, text, sig, _el: el };
+        result.push(record);
+        domBySig.set(sig, el);
+        if (messageId) domById.set(messageId, el);
+        ids.add(id);
+        sigs.add(sig);
       }
-    }
-
-    let state = load();
-
-    function save() {
-      try { localStorage.setItem(CONFIG.LS_KEY, JSON.stringify(state)); }
-      catch (_) { /* ignore */ }
-    }
-
-    function set(key, value, { silent = false } = {}) {
-      state = { ...state, [key]: value };
-      if (!silent) save();
-    }
-
-    function assign(patch, { silent = false } = {}) {
-      state = { ...state, ...patch };
-      if (!silent) save();
-    }
-
-    return {
-      defaults,
-      snapshot: () => ({ ...state }),
-      get: (key) => state[key],
-      set,
-      assign,
-      save,
-    };
-  })();
-
-  /** ================= 授权 ================= **/
-  const Auth = (() => {
-    const origFetch = window.fetch.bind(window);
-    let lastAuth = null;
-    let patched = false;
-
-    function extractAuthHeaders(input, init) {
-      try {
-        if (input instanceof Request) {
-          const headers = Object.fromEntries(input.headers.entries());
-          return headers.authorization || headers.Authorization || null;
-        }
-        const headers = init?.headers;
-        if (headers instanceof Headers) {
-          return headers.get('authorization') || headers.get('Authorization');
-        }
-        if (headers && typeof headers === 'object') {
-          return headers.authorization || headers.Authorization || null;
-        }
-      } catch (_) {
-        return null;
+      this.domBySig = domBySig;
+      this.domById = domById;
+      this.currentBranchIds = ids;
+      this.currentBranchSigs = sigs;
+      if (result.length) {
+        const leaf = result[result.length - 1];
+        this.currentBranchLeafId = leaf?.id || null;
+        this.currentBranchLeafSig = leaf?.sig || null;
+      } else {
+        this.currentBranchLeafId = null;
+        this.currentBranchLeafSig = null;
       }
-      return null;
+      this.latestLinear = result;
+      return result;
     }
-
-    function rememberAuth(authHeader) {
-      if (!authHeader || lastAuth) return;
-      lastAuth = { Authorization: authHeader };
-    }
-
-    async function ensureAuth() {
-      if (lastAuth?.Authorization) return lastAuth;
-      try {
-        const res = await origFetch('/api/auth/session', { credentials: 'include' });
-        if (res.ok) {
-          const data = await res.json();
-          if (data?.accessToken) {
-            lastAuth = { Authorization: `Bearer ${data.accessToken}` };
-            return lastAuth;
-          }
+    applyHighlight(rootEl) {
+      if (!rootEl) return;
+      const nodeEls = rootEl.querySelectorAll(".gtt-node");
+      const connectorEls = rootEl.querySelectorAll(".gtt-children");
+      nodeEls.forEach((el) => el.classList.remove("gtt-current", "gtt-current-leaf"));
+      connectorEls.forEach((el) => el.classList.remove("gtt-current-line"));
+      const hasBranch = this.currentBranchIds.size || this.currentBranchSigs.size;
+      if (!hasBranch) return;
+      nodeEls.forEach((el) => {
+        const id = el.dataset?.nodeId;
+        const sig = el.dataset?.sig;
+        const chainIds = Array.isArray(el._chainIds) ? el._chainIds : null;
+        const chainSigs = Array.isArray(el._chainSigs) ? el._chainSigs : null;
+        const matchesId = id && this.currentBranchIds.has(id);
+        const matchesSig = sig && this.currentBranchSigs.has(sig);
+        const matchesChainId = chainIds ? chainIds.some((cid) => this.currentBranchIds.has(cid)) : false;
+        const matchesChainSig = chainSigs ? chainSigs.some((cs) => this.currentBranchSigs.has(cs)) : false;
+        const isCurrent = matchesId || matchesSig || matchesChainId || matchesChainSig;
+        if (!isCurrent) return;
+        el.classList.add("gtt-current");
+        const isLeaf = (
+          (this.currentBranchLeafId && (id === this.currentBranchLeafId || (chainIds && chainIds.includes(this.currentBranchLeafId))))
+          || (this.currentBranchLeafSig && (sig === this.currentBranchLeafSig || (chainSigs && chainSigs.includes(this.currentBranchLeafSig))))
+        );
+        if (isLeaf) el.classList.add("gtt-current-leaf");
+        const parent = el.parentElement;
+        if (parent?.classList?.contains("gtt-children")) {
+          parent.classList.add("gtt-current-line");
         }
-      } catch (_) {
-        /* ignore */
-      }
-      return lastAuth || {};
+      });
     }
+  }
 
-    function withHeaders(extra = {}) {
-      return { ...(lastAuth || {}), ...extra };
+  class Navigator {
+    constructor(branchState, panel) {
+      this.branchState = branchState;
+      this.panel = panel;
+      this.SCROLLABLE_VALUES = new Set(["auto", "scroll", "overlay"]);
     }
-
-    function patch(onMapping) {
-      if (patched) return;
-      patched = true;
-      window.fetch = async (...args) => {
-        const [input, init] = args;
-        const authHeader = extractAuthHeaders(input, init);
-        if (authHeader) rememberAuth(authHeader);
-        const response = await origFetch(...args);
-        try {
-          const url = typeof input === 'string' ? input : (input?.url || '');
-          if (/\/backend-api\/conversation\//.test(url)) {
-            const clone = response.clone();
-            const json = await clone.json();
-            if (json?.mapping) {
-              onMapping(json.mapping);
-            }
-          }
-        } catch (_) {
-          /* ignore parsing errors */
-        }
-        return response;
-      };
+    openModal(text, reason) {
+      this.panel.showModal(text, reason);
     }
-
-    return { ensureAuth, withHeaders, patch, origFetch };
-  })();
-
-  /** ================= 树状态 ================= **/
-  const TreeState = {
-    mapping: null,
-    domBySig: new Map(),
-    domById: new Map(),
-    currentBranchIds: new Set(),
-    currentBranchSigs: new Set(),
-    currentBranchLeafId: null,
-    currentBranchLeafSig: null,
-  };
-
-  /** ================= 模态 & 跳转 ================= **/
-  const Navigator = (() => {
-    const SCROLLABLE_VALUES = new Set(['auto', 'scroll', 'overlay']);
-
-    function findScrollContainer(el) {
+    closeModal() {
+      this.panel.hideModal();
+    }
+    findScrollContainer(el) {
       const rootSel = CONFIG.SELECTORS?.scrollRoot;
       if (rootSel) {
         const root = document.querySelector(rootSel);
@@ -467,39 +458,37 @@
       let cur = el?.parentElement;
       while (cur && cur !== document.body) {
         const style = getComputedStyle(cur);
-        if ((SCROLLABLE_VALUES.has(style.overflowY) || SCROLLABLE_VALUES.has(style.overflow)) && cur.scrollHeight > cur.clientHeight + 8) {
+        if ((this.SCROLLABLE_VALUES.has(style.overflowY) || this.SCROLLABLE_VALUES.has(style.overflow)) && cur.scrollHeight > cur.clientHeight + 8) {
           return cur;
         }
         cur = cur.parentElement;
       }
       return document.scrollingElement || document.documentElement;
     }
-
-    function scrollToEl(el) {
+    scrollToEl(el) {
       if (!el) return;
-      const container = findScrollContainer(el);
+      const container = this.findScrollContainer(el);
       if (container && container !== document.body && container !== document.documentElement) {
         const rect = el.getBoundingClientRect();
         const parentRect = container.getBoundingClientRect();
         const offset = rect.top - parentRect.top + container.scrollTop - CONFIG.SCROLL_OFFSET;
-        container.scrollTo({ top: offset, behavior: 'smooth' });
+        container.scrollTo({ top: offset, behavior: "smooth" });
       } else {
         const offset = el.getBoundingClientRect().top + window.scrollY - CONFIG.SCROLL_OFFSET;
-        window.scrollTo({ top: offset, behavior: 'smooth' });
+        window.scrollTo({ top: offset, behavior: "smooth" });
       }
-      el.classList.add('gtt-highlight');
-      setTimeout(() => el.classList.remove('gtt-highlight'), CONFIG.HIGHLIGHT_MS);
+      el.classList.add("gtt-highlight");
+      setTimeout(() => el.classList.remove("gtt-highlight"), CONFIG.HIGHLIGHT_MS);
     }
-
-    function locateByText(text) {
-      const snippet = Text.normalize(text).slice(0, 120);
+    locateByText(text) {
+      const snippet = TextUtils.normalize(text).slice(0, 120);
       if (!snippet) return null;
-      const blocks = DOM.queryAll(CONFIG.SELECTORS.messageBlocks);
+      const blocks = DOMUtils.queryAll(CONFIG.SELECTORS.messageBlocks);
       let best = null;
       let score = -1;
       for (const el of blocks) {
-        const textEl = DOM.query(CONFIG.SELECTORS.messageText, el) || el;
-        const normalized = Text.normalize(textEl?.innerText || '');
+        const textEl = DOMUtils.query(CONFIG.SELECTORS.messageText, el) || el;
+        const normalized = TextUtils.normalize(textEl?.innerText || "");
         const idx = normalized.indexOf(snippet);
         if (idx >= 0) {
           const sc = 3000 - idx + Math.min(120, snippet.length);
@@ -511,182 +500,58 @@
       }
       return best;
     }
-
-    function openModal(text, reason) {
-      const body = DOM.query('#gtt-md-body');
-      const title = DOM.query('#gtt-md-title');
-      const modal = DOM.query('#gtt-modal');
-      if (!body || !title || !modal) return;
-      body.innerHTML = Markdown.renderLite(text);
-      title.textContent = reason || '节点预览（未能定位到页面元素，已为你展示文本）';
-      modal.style.display = 'flex';
-    }
-
-    function closeModal() {
-      const modal = DOM.query('#gtt-modal');
-      const body = DOM.query('#gtt-md-body');
-      if (modal) modal.style.display = 'none';
-      if (body) body.innerHTML = '';
-    }
-
-    async function jumpTo(node) {
+    async jumpTo(node) {
       if (!node) return;
-      let target = TreeState.domById.get(node.id);
-      if (target && target.isConnected) return scrollToEl(target);
+      let target = this.branchState.domById.get(node.id);
+      if (target && target.isConnected) return this.scrollToEl(target);
       const sig = node.sig || Signature.create(node.role, node.text);
-      target = TreeState.domBySig.get(sig);
-      if (target && target.isConnected) return scrollToEl(target);
-      target = locateByText(node.text);
-      if (target) return scrollToEl(target);
-      openModal(node.text || '(无文本)', '节点预览（未能定位到页面元素，已为你展示文本）');
+      target = this.branchState.domBySig.get(sig);
+      if (target && target.isConnected) return this.scrollToEl(target);
+      target = this.locateByText(node.text);
+      if (target) return this.scrollToEl(target);
+      this.openModal(node.text || "(无文本)", "节点预览（未能定位到页面元素，已为你展示文本）");
     }
+  }
 
-    return { jumpTo, openModal, closeModal };
-  })();
-
-  /** ================= 面板 ================= **/
-  const Panel = (() => {
-    let widthRangeEl = null;
-    let widthValueEl = null;
-    let resizeListenerBound = false;
-    let treeHeightScheduled = false;
-
-    function scheduleNextFrame(cb) {
-      const runner = () => {
-        treeHeightScheduled = false;
-        cb();
-      };
-      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-        window.requestAnimationFrame(runner);
-      } else {
-        setTimeout(runner, 16);
-      }
+  class PanelView {
+    constructor(prefs) {
+      this.prefs = prefs;
+      this.panelEl = null;
+      this.fabEl = null;
+      this.treeEl = null;
+      this.statsEl = null;
+      this.modalEl = null;
+      this.modalBodyEl = null;
+      this.modalTitleEl = null;
+      this.widthRangeEl = null;
+      this.widthValueEl = null;
+      this.searchInputEl = null;
+      this.dragHandle = null;
+      this.resizeHandle = null;
+      this.handlers = { refresh: () => {} };
+      this.resizeListenerBound = false;
+      this.treeHeightScheduled = false;
+      this.hiddenState = !!this.prefs.get("hidden");
     }
-
-    function updateTreeHeight(immediate = false) {
-      const measure = () => {
-        const tree = DOM.query('#gtt-tree');
-        if (!tree) return;
-        const nodes = Array.from(tree.querySelectorAll('.gtt-node')).filter(node => node.offsetParent);
-        if (!nodes.length) {
-          tree.style.removeProperty('--gtt-tree-max-height');
-          return;
-        }
-        const take = nodes.slice(0, Math.min(3, nodes.length));
-        let total = 0;
-        for (const node of take) {
-          const style = window.getComputedStyle(node);
-          const marginTop = parseFloat(style.marginTop) || 0;
-          const marginBottom = parseFloat(style.marginBottom) || 0;
-          total += node.offsetHeight + marginTop + marginBottom;
-        }
-        const treeStyle = window.getComputedStyle(tree);
-        const paddingTop = parseFloat(treeStyle.paddingTop) || 0;
-        const paddingBottom = parseFloat(treeStyle.paddingBottom) || 0;
-        const height = Math.max(0, Math.ceil(total + paddingTop + paddingBottom));
-        if (height > 0) {
-          tree.style.setProperty('--gtt-tree-max-height', `${height}px`);
-        } else {
-          tree.style.removeProperty('--gtt-tree-max-height');
-        }
-      };
-
-      if (immediate) {
-        measure();
-        return;
-      }
-      if (treeHeightScheduled) return;
-      treeHeightScheduled = true;
-      scheduleNextFrame(measure);
+    ensureMounted() {
+      if (this.panelEl) return;
+      this.ensureFab();
+      this.createPanel();
     }
-
-    function getViewportWidthLimit() {
-      const viewportLimit = Math.max(CONFIG.PANEL_WIDTH_MIN, Math.floor(window.innerWidth - 24));
-      return Math.min(CONFIG.PANEL_WIDTH_MAX, viewportLimit);
-    }
-
-    function clampWidth(value) {
-      const max = getViewportWidthLimit();
-      if (!Number.isFinite(value)) return max;
-      return Math.min(Math.max(CONFIG.PANEL_WIDTH_MIN, Math.round(value)), max);
-    }
-
-    function getAutoWidth() {
-      return clampWidth(CONFIG.PANEL_WIDTH_MAX);
-    }
-
-    function updateWidthRangeBounds() {
-      if (!widthRangeEl) return;
-      widthRangeEl.min = String(CONFIG.PANEL_WIDTH_MIN);
-      widthRangeEl.max = String(getViewportWidthLimit());
-    }
-
-    function updateWidthDisplay(value) {
-      if (widthValueEl) {
-        widthValueEl.textContent = Number.isFinite(value) ? `${clampWidth(value)}px` : '自动';
-      }
-      if (widthRangeEl) {
-        const fallback = getAutoWidth();
-        const displayValue = Number.isFinite(value) ? clampWidth(value) : fallback;
-        widthRangeEl.value = String(displayValue);
-      }
-    }
-
-    function syncWidth(value = Prefs.get('width'), { preview = false } = {}) {
-      const panel = DOM.query('#gtt-panel');
-      if (!panel) return null;
-      updateWidthRangeBounds();
-      let applied = null;
-      if (Number.isFinite(value)) {
-        const clamped = clampWidth(value);
-        panel.style.setProperty('--gtt-panel-width', `${clamped}px`);
-        updateWidthDisplay(clamped);
-        applied = clamped;
-      } else {
-        panel.style.removeProperty('--gtt-panel-width');
-        updateWidthDisplay(null);
-      }
-      updateTreeHeight();
-      return applied;
-    }
-
-    function setWidth(value, { silent = false } = {}) {
-      if (!Number.isFinite(value)) {
-        Prefs.set('width', null, { silent });
-        syncWidth(null);
-        return null;
-      }
-      const clamped = clampWidth(value);
-      Prefs.set('width', clamped, { silent });
-      syncWidth(clamped);
-      return clamped;
-    }
-
-    function resetWidth() {
-      setWidth(null);
-    }
-
-    function ensureResizeListener() {
-      if (resizeListenerBound) return;
-      resizeListenerBound = true;
-      window.addEventListener('resize', () => {
-        syncWidth();
-        updateTreeHeight();
-      });
-    }
-    function ensureFab() {
-      if (DOM.query('#gtt-fab')) return;
-      const fab = document.createElement('div');
-      fab.id = 'gtt-fab';
+    ensureFab() {
+      if (this.fabEl) return;
+      const fab = document.createElement("div");
+      fab.id = "gtt-fab";
       fab.innerHTML = `<span class="dot"></span><span class="txt">GPT Tree</span>`;
-      fab.addEventListener('click', () => setHidden(false));
+      fab.addEventListener("click", () => this.setHidden(false));
       document.body.appendChild(fab);
+      this.fabEl = fab;
+      this.syncFabVisibility();
     }
-
-    function ensurePanel() {
-      if (DOM.query('#gtt-panel')) return;
-      const panel = document.createElement('div');
-      panel.id = 'gtt-panel';
+    createPanel() {
+      if (this.panelEl) return;
+      const panel = document.createElement("div");
+      panel.id = "gtt-panel";
       panel.innerHTML = `
         <div id="gtt-resize" title="拖拽调整宽度"></div>
         <div id="gtt-header">
@@ -700,7 +565,7 @@
             <span style="opacity:.65" id="gtt-stats"></span>
             <div class="gtt-pref-row">
               <span class="gtt-pref-title">最大宽度</span>
-              <input type="range" id="gtt-width-range" min="${CONFIG.PANEL_WIDTH_MIN}" max="${CONFIG.PANEL_WIDTH_MAX}" step="${CONFIG.PANEL_WIDTH_STEP}">
+              <input type="range" id="gtt-width-range" step="${CONFIG.PANEL_WIDTH_STEP}">
               <span class="gtt-pref-value" id="gtt-width-value"></span>
               <button type="button" class="gtt-pref-reset" id="gtt-width-reset" title="恢复默认宽度">重置</button>
             </div>
@@ -718,90 +583,130 @@
         </div>
       `;
       document.body.appendChild(panel);
-      bindPanel(panel);
-      applyState(panel);
-    }
-
-    function bindPanel(panel) {
-      const btnHide = DOM.query('#gtt-btn-hide', panel);
-      const btnRefresh = DOM.query('#gtt-btn-refresh', panel);
-      const btnCloseModal = DOM.query('#gtt-md-close', panel);
-      const dragHandle = DOM.query('#gtt-drag', panel);
-      const inputSearch = DOM.query('#gtt-search', panel);
-      widthRangeEl = DOM.query('#gtt-width-range', panel);
-      widthValueEl = DOM.query('#gtt-width-value', panel);
-      const widthResetBtn = DOM.query('#gtt-width-reset', panel);
-      const resizeHandle = DOM.query('#gtt-resize', panel);
-
-      if (btnHide) btnHide.addEventListener('click', () => setHidden(true));
-      if (btnRefresh) btnRefresh.addEventListener('click', () => Lifecycle.rebuild({ forceFetch: true, hard: true }));
-      if (btnCloseModal) btnCloseModal.addEventListener('click', Navigator.closeModal);
-
-      if (inputSearch) {
-        const handleSearch = Timing.debounce((e) => {
-          const query = (typeof e === 'string' ? e : (e?.target?.value || '')).trim().toLowerCase();
-          DOM.queryAll('#gtt-tree .gtt-node').forEach(node => {
-            node.style.display = node.textContent.toLowerCase().includes(query) ? '' : 'none';
+      this.panelEl = panel;
+      this.treeEl = DOMUtils.query("#gtt-tree", panel);
+      this.statsEl = DOMUtils.query("#gtt-stats", panel);
+      this.modalEl = DOMUtils.query("#gtt-modal", panel);
+      this.modalBodyEl = DOMUtils.query("#gtt-md-body", panel);
+      this.modalTitleEl = DOMUtils.query("#gtt-md-title", panel);
+      this.widthRangeEl = DOMUtils.query("#gtt-width-range", panel);
+      this.widthValueEl = DOMUtils.query("#gtt-width-value", panel);
+      this.searchInputEl = DOMUtils.query("#gtt-search", panel);
+      this.dragHandle = DOMUtils.query("#gtt-drag", panel);
+      this.resizeHandle = DOMUtils.query("#gtt-resize", panel);
+      const btnHide = DOMUtils.query("#gtt-btn-hide", panel);
+      const btnRefresh = DOMUtils.query("#gtt-btn-refresh", panel);
+      const btnCloseModal = DOMUtils.query("#gtt-md-close", panel);
+      const widthResetBtn = DOMUtils.query("#gtt-width-reset", panel);
+      if (btnHide) btnHide.addEventListener("click", () => this.setHidden(true));
+      if (btnRefresh) btnRefresh.addEventListener("click", () => this.handlers.refresh());
+      if (btnCloseModal) btnCloseModal.addEventListener("click", () => this.hideModal());
+      if (widthResetBtn) widthResetBtn.addEventListener("click", () => this.resetWidth());
+      if (this.searchInputEl) {
+        const handleSearch = IdleScheduler.debounce((value) => {
+          const query = (typeof value === "string" ? value : this.searchInputEl.value || "").trim().toLowerCase();
+          DOMUtils.queryAll("#gtt-tree .gtt-node").forEach((node) => {
+            node.style.display = node.textContent.toLowerCase().includes(query) ? "" : "none";
           });
-          updateTreeHeight();
+          this.updateTreeHeight();
         }, 120);
-        inputSearch.addEventListener('input', handleSearch);
+        this.searchInputEl.addEventListener("input", (e) => handleSearch(e.target?.value));
       }
-
-      if (widthRangeEl) {
-        widthRangeEl.addEventListener('input', (e) => {
+      if (this.widthRangeEl) {
+        this.widthRangeEl.addEventListener("input", (e) => {
           const value = Number(e.target?.value);
-          if (Number.isFinite(value)) syncWidth(value, { preview: true });
+          if (Number.isFinite(value)) this.syncWidth(value, { preview: true });
         });
-        widthRangeEl.addEventListener('change', (e) => {
-          setWidth(Number(e.target?.value));
+        this.widthRangeEl.addEventListener("change", (e) => {
+          const value = Number(e.target?.value);
+          this.setWidth(Number.isFinite(value) ? value : null);
         });
       }
-
-      if (widthResetBtn) widthResetBtn.addEventListener('click', () => resetWidth());
-
-      if (dragHandle) enableDrag(panel, dragHandle);
-      if (resizeHandle) enableResize(panel, resizeHandle);
+      this.enableDrag();
+      this.enableResize();
+      this.applyState();
     }
-
-    function applyState(panel) {
-      setHidden(Prefs.get('hidden'), { silent: true });
-      applyPosition(panel);
-      syncWidth();
-      ensureResizeListener();
+    registerHandlers(handlers) {
+      this.handlers = { ...this.handlers, ...handlers };
     }
-
-    function applyPosition(panel = DOM.query('#gtt-panel')) {
+    panelExists() { return !!this.panelEl; }
+    get treeContainer() { return this.treeEl; }
+    focusSearch() { this.searchInputEl?.focus(); }
+    clearSearch() {
+      if (!this.searchInputEl) return;
+      this.searchInputEl.value = "";
+      this.searchInputEl.dispatchEvent(new Event("input"));
+    }
+    showModal(text, reason = "节点预览") {
+      if (!this.modalEl || !this.modalBodyEl || !this.modalTitleEl) return;
+      this.modalBodyEl.innerHTML = MarkdownRenderer.renderLite(text);
+      this.modalTitleEl.textContent = reason;
+      this.modalEl.style.display = "flex";
+    }
+    hideModal() {
+      if (!this.modalEl || !this.modalBodyEl) return;
+      this.modalEl.style.display = "none";
+      this.modalBodyEl.innerHTML = "";
+    }
+    isModalOpen() {
+      return this.modalEl?.style?.display === "flex";
+    }
+    updateStats(total) {
+      if (this.statsEl) this.statsEl.textContent = total ? `节点：${total}` : "";
+    }
+    toggleHidden() {
+      this.setHidden(!this.hiddenState);
+    }
+    setHidden(value, { silent = false } = {}) {
+      this.hiddenState = !!value;
+      if (this.panelEl) {
+        this.panelEl.style.display = this.hiddenState ? "none" : "flex";
+        if (!this.hiddenState) this.updateTreeHeight();
+      }
+      this.syncFabVisibility();
+      this.prefs.set("hidden", this.hiddenState, { silent });
+    }
+    syncFabVisibility() {
+      if (!this.fabEl) return;
+      this.fabEl.style.display = this.hiddenState ? "inline-flex" : "none";
+    }
+    applyState() {
+      this.setHidden(this.prefs.get("hidden"), { silent: true });
+      this.applyPosition();
+      this.syncWidth();
+      this.ensureResizeListener();
+    }
+    applyPosition(panel = this.panelEl) {
       if (!panel) return;
-      const pos = Prefs.get('pos');
+      const pos = this.prefs.get("pos");
       if (pos) {
         panel.style.left = `${pos.left}px`;
         panel.style.top = `${pos.top}px`;
-        panel.style.right = 'auto';
+        panel.style.right = "auto";
       }
     }
-
-    function rememberPosition(panel) {
-      if (!panel) return;
-      const rect = panel.getBoundingClientRect();
-      Prefs.set('pos', { left: Math.round(rect.left), top: Math.round(rect.top) });
+    rememberPosition() {
+      if (!this.panelEl) return;
+      const rect = this.panelEl.getBoundingClientRect();
+      this.prefs.set("pos", { left: Math.round(rect.left), top: Math.round(rect.top) });
     }
-
-    function enableDrag(panel, handle) {
+    enableDrag() {
+      const panel = this.panelEl;
+      const handle = this.dragHandle;
+      if (!panel || !handle) return;
       let dragging = false;
       let startX = 0;
       let startY = 0;
       let startLeft = 0;
       let startTop = 0;
-
-      handle.addEventListener('mousedown', (e) => {
+      handle.addEventListener("mousedown", (e) => {
         dragging = true;
         startX = e.clientX;
         startY = e.clientY;
         const rect = panel.getBoundingClientRect();
         startLeft = rect.left;
         startTop = rect.top;
-        panel.style.right = 'auto';
+        panel.style.right = "auto";
         const onMove = (ev) => {
           if (!dragging) return;
           const left = startLeft + (ev.clientX - startX);
@@ -811,28 +716,28 @@
         };
         const onUp = () => {
           dragging = false;
-          document.removeEventListener('mousemove', onMove);
-          rememberPosition(panel);
+          document.removeEventListener("mousemove", onMove);
+          this.rememberPosition();
         };
-        document.addEventListener('mousemove', onMove);
-        document.addEventListener('mouseup', onUp, { once: true });
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp, { once: true });
       });
     }
-
-    function enableResize(panel, handle) {
+    enableResize() {
+      const panel = this.panelEl;
+      const handle = this.resizeHandle;
       if (!panel || !handle) return;
       let resizing = false;
       let startX = 0;
       let startWidth = 0;
       let previewWidth = null;
       const cleanup = (onMove, onUp) => {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-        document.removeEventListener('touchmove', onMove, true);
-        document.removeEventListener('touchend', onUp, true);
-        document.removeEventListener('touchcancel', onUp, true);
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        document.removeEventListener("touchmove", onMove, true);
+        document.removeEventListener("touchend", onUp, true);
+        document.removeEventListener("touchcancel", onUp, true);
       };
-
       const startResize = (clientX) => {
         resizing = true;
         startX = clientX;
@@ -840,178 +745,201 @@
         previewWidth = startWidth;
         const prevUserSelect = document.body.style.userSelect;
         const prevCursor = document.body.style.cursor;
-        document.body.style.userSelect = 'none';
-        document.body.style.cursor = 'ew-resize';
-
+        document.body.style.userSelect = "none";
+        document.body.style.cursor = "ew-resize";
         const handleMove = (evt) => {
           if (!resizing) return;
           if (evt?.cancelable) evt.preventDefault();
           const point = evt.touches ? evt.touches[0] : evt;
           if (!point) return;
           const delta = startX - point.clientX;
-          const next = clampWidth(startWidth + delta);
+          const next = this.clampWidth(startWidth + delta);
           previewWidth = next;
-          syncWidth(next, { preview: true });
+          this.syncWidth(next, { preview: true });
         };
-
         const handleUp = () => {
           if (!resizing) return;
           resizing = false;
           cleanup(handleMove, handleUp);
           document.body.style.userSelect = prevUserSelect;
           document.body.style.cursor = prevCursor;
-          const stored = Prefs.get('width');
+          const stored = this.prefs.get("width");
           if (previewWidth != null && Math.abs(previewWidth - startWidth) >= 1) {
-            setWidth(previewWidth);
+            this.setWidth(previewWidth);
           } else if (!Number.isFinite(stored)) {
-            syncWidth(null);
+            this.syncWidth(null);
           } else {
-            syncWidth(stored);
+            this.syncWidth(stored);
           }
         };
-
-        document.addEventListener('mousemove', handleMove);
-        document.addEventListener('mouseup', handleUp, { once: true });
-        document.addEventListener('touchmove', handleMove, { capture: true, passive: false });
-        document.addEventListener('touchend', handleUp, { once: true, capture: true });
-        document.addEventListener('touchcancel', handleUp, { once: true, capture: true });
+        document.addEventListener("mousemove", handleMove);
+        document.addEventListener("mouseup", handleUp, { once: true });
+        document.addEventListener("touchmove", handleMove, { capture: true, passive: false });
+        document.addEventListener("touchend", handleUp, { once: true, capture: true });
+        document.addEventListener("touchcancel", handleUp, { once: true, capture: true });
       };
-
-      handle.addEventListener('mousedown', (e) => {
+      handle.addEventListener("mousedown", (e) => {
         e.preventDefault();
         startResize(e.clientX);
       });
-
-      handle.addEventListener('touchstart', (e) => {
+      handle.addEventListener("touchstart", (e) => {
         const touch = e.touches?.[0];
         if (!touch) return;
         e.preventDefault();
         startResize(touch.clientX);
       }, { passive: false });
-
-      handle.addEventListener('dblclick', (e) => {
+      handle.addEventListener("dblclick", (e) => {
         e.preventDefault();
-        resetWidth();
+        this.resetWidth();
       });
     }
-
-    function setHidden(value, { silent = false } = {}) {
-      const panel = DOM.query('#gtt-panel');
-      const fab = DOM.query('#gtt-fab');
-      if (!panel || !fab) return;
-      if (value) {
-        panel.style.display = 'none';
-        fab.style.display = 'inline-flex';
+    clampWidth(value) {
+      const max = this.getViewportWidthLimit();
+      if (!Number.isFinite(value)) return max;
+      return Math.min(Math.max(CONFIG.PANEL_WIDTH_MIN, Math.round(value)), max);
+    }
+    getViewportWidthLimit() {
+      const viewportLimit = Math.max(CONFIG.PANEL_WIDTH_MIN, Math.floor(window.innerWidth - 24));
+      return Math.min(CONFIG.PANEL_WIDTH_MAX, viewportLimit);
+    }
+    getAutoWidth() {
+      return this.clampWidth(CONFIG.PANEL_WIDTH_MAX);
+    }
+    syncWidth(value = this.prefs.get("width"), { preview = false } = {}) {
+      if (!this.panelEl) return null;
+      this.updateWidthRangeBounds();
+      let applied = null;
+      if (Number.isFinite(value)) {
+        const clamped = this.clampWidth(value);
+        this.panelEl.style.setProperty("--gtt-panel-width", `${clamped}px`);
+        this.updateWidthDisplay(clamped);
+        applied = clamped;
       } else {
-        panel.style.display = 'flex';
-        fab.style.display = 'none';
-        updateTreeHeight();
+        this.panelEl.style.removeProperty("--gtt-panel-width");
+        this.updateWidthDisplay(null);
       }
-      Prefs.set('hidden', !!value, { silent });
+      if (!preview) this.updateTreeHeight();
+      return applied;
     }
-
-    function updateStats(total) {
-      const el = DOM.query('#gtt-stats');
-      if (el) el.textContent = total ? `节点：${total}` : '';
+    setWidth(value, { silent = false } = {}) {
+      if (!Number.isFinite(value)) {
+        this.prefs.set("width", null, { silent });
+        this.syncWidth(null);
+        return null;
+      }
+      const clamped = this.clampWidth(value);
+      this.prefs.set("width", clamped, { silent });
+      this.syncWidth(clamped);
+      return clamped;
     }
-
-    return {
-      ensure: () => { ensureFab(); ensurePanel(); },
-      ensureFab,
-      ensurePanel,
-      setHidden,
-      updateStats,
-      applyPosition,
-      syncWidth,
-      setWidth,
-      updateTreeHeight,
-    };
-  })();
-
-  /** ================= 分支高亮 ================= **/
-  const BranchHighlighter = (() => {
-    function clear(rootEl) {
-      const nodeEls = rootEl.querySelectorAll('.gtt-node');
-      const connectorEls = rootEl.querySelectorAll('.gtt-children');
-      nodeEls.forEach(el => el.classList.remove('gtt-current', 'gtt-current-leaf'));
-      connectorEls.forEach(el => el.classList.remove('gtt-current-line'));
+    resetWidth() {
+      this.setWidth(null);
     }
-
-    function apply(rootEl = DOM.query('#gtt-tree')) {
-      if (!rootEl) return;
-      clear(rootEl);
-      const hasBranch = (TreeState.currentBranchIds.size || TreeState.currentBranchSigs.size);
-      if (!hasBranch) return;
-      const nodeEls = rootEl.querySelectorAll('.gtt-node');
-      nodeEls.forEach(el => {
-        const id = el.dataset?.nodeId;
-        const sig = el.dataset?.sig;
-        const chainIds = Array.isArray(el._chainIds) ? el._chainIds : null;
-        const chainSigs = Array.isArray(el._chainSigs) ? el._chainSigs : null;
-        const matchesId = id && TreeState.currentBranchIds.has(id);
-        const matchesSig = sig && TreeState.currentBranchSigs.has(sig);
-        const matchesChainId = chainIds ? chainIds.some(cid => TreeState.currentBranchIds.has(cid)) : false;
-        const matchesChainSig = chainSigs ? chainSigs.some(cs => TreeState.currentBranchSigs.has(cs)) : false;
-        const isCurrent = matchesId || matchesSig || matchesChainId || matchesChainSig;
-        if (!isCurrent) return;
-        el.classList.add('gtt-current');
-        const isLeaf = (
-          (TreeState.currentBranchLeafId && (id === TreeState.currentBranchLeafId || (chainIds && chainIds.includes(TreeState.currentBranchLeafId)))) ||
-          (TreeState.currentBranchLeafSig && (sig === TreeState.currentBranchLeafSig || (chainSigs && chainSigs.includes(TreeState.currentBranchLeafSig))))
-        );
-        if (isLeaf) el.classList.add('gtt-current-leaf');
-        const parent = el.parentElement;
-        if (parent?.classList?.contains('gtt-children')) {
-          parent.classList.add('gtt-current-line');
-        }
+    updateWidthRangeBounds() {
+      if (!this.widthRangeEl) return;
+      this.widthRangeEl.min = String(CONFIG.PANEL_WIDTH_MIN);
+      this.widthRangeEl.max = String(this.getViewportWidthLimit());
+    }
+    updateWidthDisplay(value) {
+      if (this.widthValueEl) {
+        this.widthValueEl.textContent = Number.isFinite(value) ? `${this.clampWidth(value)}px` : "自动";
+      }
+      if (this.widthRangeEl) {
+        const fallback = this.getAutoWidth();
+        const displayValue = Number.isFinite(value) ? this.clampWidth(value) : fallback;
+        this.widthRangeEl.value = String(displayValue);
+      }
+    }
+    ensureResizeListener() {
+      if (this.resizeListenerBound) return;
+      this.resizeListenerBound = true;
+      window.addEventListener("resize", () => {
+        this.syncWidth();
+        this.updateTreeHeight();
       });
     }
-
-    return { apply };
-  })();
-
-  /** ================= 构树 ================= **/
-  const Tree = (() => {
-    function isToolishRole(role) {
-      return role === 'tool' || role === 'system' || role === 'function';
+    updateTreeHeight(immediate = false) {
+      if (!this.panelEl) return;
+      const measure = () => {
+        if (!this.treeEl) return;
+        const nodes = Array.from(this.treeEl.querySelectorAll(".gtt-node")).filter((node) => node.offsetParent);
+        if (!nodes.length) {
+          this.treeEl.style.removeProperty("--gtt-tree-max-height");
+          return;
+        }
+        const take = nodes.slice(0, Math.min(3, nodes.length));
+        let total = 0;
+        for (const node of take) {
+          const style = window.getComputedStyle(node);
+          const marginTop = parseFloat(style.marginTop) || 0;
+          const marginBottom = parseFloat(style.marginBottom) || 0;
+          total += node.offsetHeight + marginTop + marginBottom;
+        }
+        const treeStyle = window.getComputedStyle(this.treeEl);
+        const paddingTop = parseFloat(treeStyle.paddingTop) || 0;
+        const paddingBottom = parseFloat(treeStyle.paddingBottom) || 0;
+        const height = Math.max(0, Math.ceil(total + paddingTop + paddingBottom));
+        if (height > 0) {
+          this.treeEl.style.setProperty("--gtt-tree-max-height", `${height}px`);
+        } else {
+          this.treeEl.style.removeProperty("--gtt-tree-max-height");
+        }
+      };
+      if (immediate) {
+        measure();
+        return;
+      }
+      if (this.treeHeightScheduled) return;
+      this.treeHeightScheduled = true;
+      const runner = () => {
+        this.treeHeightScheduled = false;
+        measure();
+      };
+      if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(runner);
+      } else {
+        setTimeout(runner, 16);
+      }
     }
+  }
 
-    function getRecText(rec) {
+  class TreeBuilder {
+    static isToolishRole(role) {
+      return role === "tool" || role === "system" || role === "function";
+    }
+    static getRecText(rec) {
       const parts = rec?.message?.content?.parts ?? [];
-      if (Array.isArray(parts)) return parts.join('\n');
-      if (typeof parts === 'string') return parts;
-      return '';
+      if (Array.isArray(parts)) return parts.join("\n");
+      if (typeof parts === "string") return parts;
+      return "";
     }
-
-    function isVisibleRec(rec) {
+    static isVisibleRec(rec) {
       if (!rec) return false;
-      const role = rec?.message?.author?.role || 'assistant';
-      if (isToolishRole(role)) return false;
-      const text = getRecText(rec);
-      return !!Text.normalize(text);
+      const role = rec?.message?.author?.role || "assistant";
+      if (TreeBuilder.isToolishRole(role)) return false;
+      const text = TreeBuilder.getRecText(rec);
+      return !!TextUtils.normalize(text);
     }
-
-    function visibleParentId(mapping, id) {
+    static visibleParentId(mapping, id) {
       let cur = id;
       let guard = 0;
       while (guard++ < 4096) {
         const parentId = mapping[cur]?.parent;
         if (parentId == null) return null;
         const parentRec = mapping[parentId];
-        if (isVisibleRec(parentRec)) return parentId;
+        if (TreeBuilder.isVisibleRec(parentRec)) return parentId;
         cur = parentId;
       }
       return null;
     }
-
-    function dedupBySig(ids, mapping) {
+    static dedupBySig(ids, mapping) {
       const seen = new Set();
       const out = [];
       for (const cid of ids) {
         const rec = mapping[cid];
         if (!rec) continue;
-        const role = rec?.message?.author?.role || 'assistant';
-        const text = Text.normalize(getRecText(rec));
+        const role = rec?.message?.author?.role || "assistant";
+        const text = TextUtils.normalize(TreeBuilder.getRecText(rec));
         const sig = Signature.create(role, text);
         if (!seen.has(sig)) {
           seen.add(sig);
@@ -1020,17 +948,16 @@
       }
       return out;
     }
-
-    function foldSameRoleChain(startId, mapping, childrenMap) {
+    static foldSameRoleChain(startId, mapping, childrenMap) {
       let cur = startId;
       let rec = mapping[cur];
-      const role = rec?.message?.author?.role || 'assistant';
-      let text = getRecText(rec);
+      const role = rec?.message?.author?.role || "assistant";
+      let text = TreeBuilder.getRecText(rec);
       let guard = 0;
       const chainIds = [];
       const chainSigs = [];
       while (rec && guard++ < 4096) {
-        const curText = getRecText(rec);
+        const curText = TreeBuilder.getRecText(rec);
         if (curText) {
           chainIds.push(cur);
           chainSigs.push(Signature.create(role, curText));
@@ -1039,8 +966,8 @@
         if (kids.length !== 1) break;
         const kidId = kids[0];
         const kidRec = mapping[kidId];
-        const kidRole = kidRec?.message?.author?.role || 'assistant';
-        const kidText = getRecText(kidRec);
+        const kidRole = kidRec?.message?.author?.role || "assistant";
+        const kidText = TreeBuilder.getRecText(kidRec);
         if (kidRole === role && kidText && text) {
           text = `${text}\n${kidText}`.trim();
           cur = kidId;
@@ -1051,14 +978,13 @@
       }
       return { id: cur, role, text, chainIds, chainSigs };
     }
-
-    function mappingToTree(mapping) {
-      const visibleIds = Object.keys(mapping).filter(id => isVisibleRec(mapping[id]));
+    static fromMapping(mapping) {
+      const visibleIds = Object.keys(mapping).filter((id) => TreeBuilder.isVisibleRec(mapping[id]));
       const parentMap = new Map();
       for (const vid of visibleIds) {
-        parentMap.set(vid, visibleParentId(mapping, vid));
+        parentMap.set(vid, TreeBuilder.visibleParentId(mapping, vid));
       }
-      const childrenMap = new Map(visibleIds.map(id => [id, []]));
+      const childrenMap = new Map(visibleIds.map((id) => [id, []]));
       for (const vid of visibleIds) {
         const parentId = parentMap.get(vid);
         if (parentId && childrenMap.has(parentId)) {
@@ -1066,12 +992,11 @@
         }
       }
       for (const [pid, arr] of childrenMap.entries()) {
-        childrenMap.set(pid, dedupBySig(arr, mapping));
+        childrenMap.set(pid, TreeBuilder.dedupBySig(arr, mapping));
       }
-      const roots = visibleIds.filter(id => parentMap.get(id) == null);
-
+      const roots = visibleIds.filter((id) => parentMap.get(id) == null);
       const toNode = (id) => {
-        const folded = foldSameRoleChain(id, mapping, childrenMap);
+        const folded = TreeBuilder.foldSameRoleChain(id, mapping, childrenMap);
         const currentId = folded.id;
         const currentRole = folded.role;
         const currentText = folded.text;
@@ -1081,79 +1006,80 @@
         const children = (childrenMap.get(currentId) || []).map(toNode).filter(Boolean);
         return { id: currentId, role: currentRole, text: currentText, sig, chainIds, chainSigs, children };
       };
-
       return roots.map(toNode).filter(Boolean);
     }
-
-    function linearToTree(linear) {
+    static fromLinear(linear) {
       const nodes = [];
       for (let i = 0; i < linear.length; i++) {
         const current = linear[i];
-        if (current.role === 'user') {
+        if (current.role === "user") {
           const next = linear[i + 1];
-          const pair = { id: current.id, role: 'user', text: current.text, sig: current.sig, children: [] };
-          if (next && next.role === 'assistant') {
-            pair.children.push({ id: next.id, role: 'assistant', text: next.text, sig: next.sig, children: [] });
+          const pair = { id: current.id, role: "user", text: current.text, sig: current.sig, children: [] };
+          if (next && next.role === "assistant") {
+            pair.children.push({ id: next.id, role: "assistant", text: next.text, sig: next.sig, children: [] });
           }
           nodes.push(pair);
         } else {
-          nodes.push({ id: current.id, role: 'assistant', text: current.text, sig: current.sig, children: [] });
+          nodes.push({ id: current.id, role: "assistant", text: current.text, sig: current.sig, children: [] });
         }
       }
       return nodes;
     }
+  }
 
-    function renderTreeGradually(targetEl, treeData) {
-      targetEl.innerHTML = '';
-      Panel.updateTreeHeight(true);
+  class TreeRenderer {
+    constructor(panel, branchState, navigator) {
+      this.panel = panel;
+      this.branchState = branchState;
+      this.navigator = navigator;
+    }
+    render(treeData) {
+      const targetEl = this.panel.treeContainer;
+      if (!targetEl) return;
+      targetEl.innerHTML = "";
+      this.panel.updateTreeHeight(true);
       const stats = { total: 0 };
       const container = document.createDocumentFragment();
       const queue = [];
-
       const pushList = (nodes, parent) => { for (const node of nodes) queue.push({ node, parent }); };
-
       const createItem = (node) => {
-        const item = document.createElement('div');
-        item.className = 'gtt-node';
+        const item = document.createElement("div");
+        item.className = "gtt-node";
         item.dataset.nodeId = node.id;
         item.dataset.sig = node.sig;
-        item.title = `${node.id}\n\n${node.text || ''}`;
+        item.title = `${node.id}\n\n${node.text || ""}`;
         if (node.chainIds) item._chainIds = node.chainIds;
         if (node.chainSigs) item._chainSigs = node.chainSigs;
-        const head = document.createElement('div');
-        head.className = 'head';
-        const badge = document.createElement('span');
-        badge.className = 'badge';
-        badge.textContent = node.role === 'user'
-          ? 'U'
-          : (node.role === 'assistant' ? 'A' : (node.role || '·'));
-        const title = document.createElement('span');
-        title.className = 'title';
-        title.textContent = node.role === 'user' ? '用户' : 'Asst';
-        const meta = document.createElement('span');
-        meta.className = 'meta';
-        meta.textContent = node.children?.length ? `×${node.children.length}` : '';
-        const pv = document.createElement('span');
-        pv.className = 'pv';
-        const pvLines = Preview.lines(node.text);
+        const head = document.createElement("div");
+        head.className = "head";
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = node.role === "user" ? "U" : (node.role === "assistant" ? "A" : (node.role || "·"));
+        const title = document.createElement("span");
+        title.className = "title";
+        title.textContent = node.role === "user" ? "用户" : "Asst";
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        meta.textContent = node.children?.length ? `×${node.children.length}` : "";
+        const pv = document.createElement("span");
+        pv.className = "pv";
+        const pvLines = PreviewBuilder.lines(node.text);
         pvLines.forEach((line, idx) => {
-          const lineEl = document.createElement('span');
-          lineEl.className = 'pv-line';
-          if (idx === 2) lineEl.classList.add('pv-line-more');
+          const lineEl = document.createElement("span");
+          lineEl.className = "pv-line";
+          if (idx === 2) lineEl.classList.add("pv-line-more");
           lineEl.textContent = line;
           pv.appendChild(lineEl);
         });
         head.append(badge, title);
         if (meta.textContent) head.append(meta);
         item.append(head, pv);
-        item.addEventListener('click', () => Navigator.jumpTo(node));
+        item.addEventListener("click", () => this.navigator.jumpTo(node));
         return item;
       };
-
-      const rootDiv = document.createElement('div');
+      const rootDiv = document.createElement("div");
       container.appendChild(rootDiv);
       pushList(treeData, rootDiv);
-
       const step = () => {
         let count = 0;
         while (count < CONFIG.RENDER_CHUNK && queue.length) {
@@ -1162,233 +1088,252 @@
           parent.appendChild(item);
           stats.total++;
           if (node.children?.length) {
-            const kids = document.createElement('div');
-            kids.className = 'gtt-children';
+            const kids = document.createElement("div");
+            kids.className = "gtt-children";
             parent.appendChild(kids);
             pushList(node.children, kids);
           }
           count++;
         }
         if (queue.length) {
-          Timing.rafIdle(step);
+          IdleScheduler.rafIdle(step);
         } else {
           targetEl.appendChild(container);
-          Panel.updateStats(stats.total);
-          BranchHighlighter.apply(targetEl);
-          Panel.updateTreeHeight();
+          this.panel.updateStats(stats.total);
+          this.applyHighlight();
+          this.panel.updateTreeHeight();
         }
       };
-
       step();
     }
+    applyHighlight() {
+      const targetEl = this.panel.treeContainer;
+      if (!targetEl) return;
+      this.branchState.applyHighlight(targetEl);
+    }
+  }
 
-    function harvestLinearNodes() {
-      const blocks = DOM.queryAll(CONFIG.SELECTORS.messageBlocks);
-      const result = [];
-      const ids = new Set();
-      const sigs = new Set();
-      const domBySig = new Map();
-      const domById = new Map();
-
-      for (const el of blocks) {
-        const textEl = DOM.query(CONFIG.SELECTORS.messageText, el) || el;
-        const raw = (textEl?.innerText || '').trim();
-        const text = Text.normalize(raw);
-        if (!text) continue;
-        let role = el.getAttribute('data-message-author-role');
-        if (!role) role = el.querySelector('.markdown,.prose') ? 'assistant' : 'user';
-        const messageId = el.getAttribute('data-message-id') || el.dataset?.messageId || DOM.query('[data-message-id]', el)?.getAttribute('data-message-id') || (el.id?.startsWith('conversation-turn-') ? el.id.split('conversation-turn-')[1] : null);
-        const id = messageId ? messageId : (`lin-${Hash.of(text.slice(0, 80))}`);
-        const sig = Signature.create(role, text);
-        const record = { id, role, text, sig, _el: el };
-        result.push(record);
-        domBySig.set(sig, el);
-        ids.add(id);
-        sigs.add(sig);
-        if (messageId) domById.set(messageId, el);
+  class BackendGateway {
+    constructor() {
+      this.origFetch = window.fetch.bind(window);
+      this.lastAuth = null;
+      this.patched = false;
+    }
+    extractAuthHeaders(input, init) {
+      try {
+        if (input instanceof Request) {
+          const headers = Object.fromEntries(input.headers.entries());
+          return headers.authorization || headers.Authorization || null;
+        }
+        const headers = init?.headers;
+        if (headers instanceof Headers) {
+          return headers.get("authorization") || headers.get("Authorization");
+        }
+        if (headers && typeof headers === "object") {
+          return headers.authorization || headers.Authorization || null;
+        }
+      } catch (_) {
+        return null;
       }
-
-      TreeState.domBySig = domBySig;
-      TreeState.domById = domById;
-      TreeState.currentBranchIds = ids;
-      TreeState.currentBranchSigs = sigs;
-      if (result.length) {
-        const leaf = result[result.length - 1];
-        TreeState.currentBranchLeafId = leaf?.id || null;
-        TreeState.currentBranchLeafSig = leaf?.sig || null;
-      } else {
-        TreeState.currentBranchLeafId = null;
-        TreeState.currentBranchLeafSig = null;
+      return null;
+    }
+    rememberAuth(authHeader) {
+      if (!authHeader || this.lastAuth) return;
+      this.lastAuth = { Authorization: authHeader };
+    }
+    async ensureAuth() {
+      if (this.lastAuth?.Authorization) return this.lastAuth;
+      try {
+        const res = await this.origFetch("/api/auth/session", { credentials: "include" });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.accessToken) {
+            this.lastAuth = { Authorization: `Bearer ${data.accessToken}` };
+            return this.lastAuth;
+          }
+        }
+      } catch (_) {
+        /* ignore */
       }
-
-      BranchHighlighter.apply();
-      return result;
+      return this.lastAuth || {};
     }
-
-    function buildFromMapping(mapping) {
-      const treeEl = DOM.query('#gtt-tree');
-      if (!treeEl) return;
-      const treeData = mappingToTree(mapping);
-      renderTreeGradually(treeEl, treeData);
+    withHeaders(extra = {}) {
+      return { ...(this.lastAuth || {}), ...extra };
     }
-
-    function buildFromLinear(linear) {
-      const treeEl = DOM.query('#gtt-tree');
-      if (!treeEl) return;
-      const treeData = linearToTree(linear);
-      renderTreeGradually(treeEl, treeData);
+    patchFetch(onMapping) {
+      if (this.patched) return;
+      this.patched = true;
+      window.fetch = async (...args) => {
+        const [input, init] = args;
+        const authHeader = this.extractAuthHeaders(input, init);
+        if (authHeader) this.rememberAuth(authHeader);
+        const response = await this.origFetch(...args);
+        try {
+          const url = typeof input === "string" ? input : (input?.url || "");
+          if (/\/backend-api\/conversation\//.test(url)) {
+            const clone = response.clone();
+            const json = await clone.json();
+            if (json?.mapping) {
+              onMapping(json.mapping);
+            }
+          }
+        } catch (_) {
+          /* ignore */
+        }
+        return response;
+      };
     }
-
-    return { harvestLinearNodes, buildFromMapping, buildFromLinear };
-  })();
-
-  /** ================= 数据层 ================= **/
-  const Data = (() => {
-    const fetchCtl = { token: 0 };
-
-    async function fetchMapping() {
-      const currentToken = ++fetchCtl.token;
-      await Auth.ensureAuth();
-      const cid = Location.getConversationId();
-      if (!cid) return null;
-      const { get: urls } = CONFIG.ENDPOINTS(cid);
+    async fetchMapping(conversationId) {
+      if (!conversationId) return null;
+      await this.ensureAuth();
+      const { get: urls } = CONFIG.ENDPOINTS(conversationId);
       for (const url of urls) {
         try {
-          const response = await Auth.origFetch(url, { credentials: 'include', headers: Auth.withHeaders() });
-          if (currentToken !== fetchCtl.token) return null;
+          const response = await this.origFetch(url, { credentials: "include", headers: this.withHeaders() });
           if (response.ok) {
             const json = await response.json();
             if (json?.mapping) return json.mapping;
           }
         } catch (_) {
-          /* ignore network errors */
+          /* ignore */
         }
       }
       return null;
     }
+  }
 
-    return { fetchMapping };
-  })();
-
-  /** ================= 监听 ================= **/
-  const Observers = (() => {
-    const observer = new MutationObserver(Timing.debounce(() => {
-      Tree.harvestLinearNodes();
-    }, CONFIG.OBS_DEBOUNCE_MS));
-
-    function start() {
-      observer.observe(document.body, { childList: true, subtree: true });
+  class DOMWatcher {
+    constructor(onChange) {
+      this.observer = new MutationObserver(IdleScheduler.debounce(onChange, CONFIG.OBS_DEBOUNCE_MS));
     }
-
-    function stop() {
-      observer.disconnect();
+    start() {
+      this.observer.observe(document.body, { childList: true, subtree: true });
     }
+    stop() {
+      this.observer.disconnect();
+    }
+  }
 
-    return { start, stop };
-  })();
-
-  /** ================= 路由感知 ================= **/
-  const Router = (() => {
-    function hook(onChange) {
+  class RouterWatcher {
+    constructor(onChange) {
+      this.onChange = onChange;
+      this.bound = false;
+    }
+    start() {
+      if (this.bound) return;
+      this.bound = true;
       const origPush = history.pushState;
       const origReplace = history.replaceState;
-      function fire() { window.dispatchEvent(new Event('gtt:locationchange')); }
-      history.pushState = function () {
-        const result = origPush.apply(this, arguments);
+      const fire = () => window.dispatchEvent(new Event("gtt:locationchange"));
+      history.pushState = function (...args) {
+        const result = origPush.apply(this, args);
         fire();
         return result;
       };
-      history.replaceState = function () {
-        const result = origReplace.apply(this, arguments);
+      history.replaceState = function (...args) {
+        const result = origReplace.apply(this, args);
         fire();
         return result;
       };
-      window.addEventListener('popstate', fire);
-      window.addEventListener('gtt:locationchange', onChange);
-      window.addEventListener('popstate', onChange);
+      window.addEventListener("popstate", fire);
+      window.addEventListener("gtt:locationchange", this.onChange);
+      window.addEventListener("popstate", this.onChange);
     }
+  }
 
-    return { hook };
-  })();
-
-  /** ================= 键盘 ================= **/
-  const Keyboard = (() => {
-    function bind() {
-      document.addEventListener('keydown', (e) => {
-        const searchInput = DOM.query('#gtt-search');
-        if (e.key === '/' && !e.metaKey && !e.ctrlKey) {
+  class KeyboardController {
+    constructor(panel, navigator) {
+      this.panel = panel;
+      this.navigator = navigator;
+    }
+    bind() {
+      document.addEventListener("keydown", (e) => {
+        const searchInput = this.panel.searchInputEl;
+        if (e.key === "/" && !e.metaKey && !e.ctrlKey) {
           e.preventDefault();
-          searchInput?.focus();
+          this.panel.focusSearch();
         }
-        if (e.key === 'Escape') {
-          const modal = DOM.query('#gtt-modal');
-          if (modal?.style?.display === 'flex') {
-            Navigator.closeModal();
+        if (e.key === "Escape") {
+          if (this.panel.isModalOpen()) {
+            this.navigator.closeModal();
           } else if (searchInput) {
-            searchInput.value = '';
-            searchInput.dispatchEvent(new Event('input'));
+            this.panel.clearSearch();
           }
         }
         if (!e.altKey) return;
-        if (e.key === 't' || e.key === 'T') {
+        if (e.key === "t" || e.key === "T") {
           e.preventDefault();
-          Panel.setHidden(!Prefs.get('hidden'));
+          this.panel.toggleHidden();
         }
       });
     }
+  }
 
-    return { bind };
-  })();
+  class LocationHelper {
+    static getConversationId() {
+      const match = location.pathname.match(/\/c\/([a-z0-9-]{10,})/i) || [];
+      return match[1] || null;
+    }
+  }
 
-  /** ================= 生命周期 ================= **/
-  const Lifecycle = (() => {
-    async function rebuild(opts = {}) {
-      Panel.ensure();
-      if (opts.hard) TreeState.mapping = null;
-      const linearNodes = Tree.harvestLinearNodes();
-      if (opts.forceFetch || !TreeState.mapping) {
-        const mapping = await Data.fetchMapping();
+  class GPTBranchTreeNavigatorApp {
+    constructor() {
+      this.prefs = new PreferenceStore(CONFIG.LS_KEY, { hidden: false, pos: null, width: null });
+      this.branchState = new BranchState();
+      this.panel = new PanelView(this.prefs);
+      this.navigator = new Navigator(this.branchState, this.panel);
+      this.renderer = new TreeRenderer(this.panel, this.branchState, this.navigator);
+      this.gateway = new BackendGateway();
+      this.domWatcher = new DOMWatcher(() => {
+        this.branchState.collectFromDom();
+        this.renderer.applyHighlight();
+      });
+      this.routerWatcher = new RouterWatcher(() => {
+        this.rebuild({ forceFetch: true, hard: true });
+      });
+      this.keyboard = new KeyboardController(this.panel, this.navigator);
+      this.panel.registerHandlers({ refresh: () => this.rebuild({ forceFetch: true }) });
+    }
+    async rebuild(opts = {}) {
+      this.panel.ensureMounted();
+      if (opts.hard) this.branchState.setMapping(null);
+      const linearNodes = this.branchState.collectFromDom();
+      if (opts.forceFetch || !this.branchState.mapping) {
+        const mapping = await this.gateway.fetchMapping(LocationHelper.getConversationId());
         if (mapping) {
-          TreeState.mapping = mapping;
-          Tree.buildFromMapping(mapping);
+          this.applyMapping(mapping);
           return;
         }
       }
-      if (TreeState.mapping) {
-        Tree.buildFromMapping(TreeState.mapping);
+      if (this.branchState.mapping) {
+        this.renderer.render(TreeBuilder.fromMapping(this.branchState.mapping));
       } else {
-        Tree.buildFromLinear(linearNodes);
+        this.renderer.render(TreeBuilder.fromLinear(linearNodes));
       }
     }
-
-    function handleMappingFromFetch(mapping) {
+    applyMapping(mapping) {
       if (!mapping) return;
-      TreeState.mapping = mapping;
-      Panel.ensure();
-      Tree.buildFromMapping(mapping);
+      this.branchState.setMapping(mapping);
+      this.panel.ensureMounted();
+      this.renderer.render(TreeBuilder.fromMapping(mapping));
     }
-
-    function boot() {
-      Panel.ensureFab();
-      Panel.ensurePanel();
-      Observers.start();
-      Router.hook(async () => {
-        await rebuild({ forceFetch: true, hard: true });
-      });
-      Keyboard.bind();
-      rebuild();
+    boot() {
+      this.panel.ensureMounted();
+      this.domWatcher.start();
+      this.routerWatcher.start();
+      this.keyboard.bind();
+      this.branchState.collectFromDom();
+      this.rebuild();
     }
+  }
 
-    return { rebuild, handleMappingFromFetch, boot };
-  })();
-
-  /** ================= 启动 ================= **/
-  Auth.patch(Lifecycle.handleMappingFromFetch);
-
+  const app = new GPTBranchTreeNavigatorApp();
+  const gateway = app.gateway;
+  gateway.patchFetch((mapping) => app.applyMapping(mapping));
   const readyTimer = setInterval(() => {
-    if (document.querySelector('main')) {
+    if (document.querySelector("main")) {
       clearInterval(readyTimer);
-      Lifecycle.boot();
+      app.boot();
     }
   }, 300);
 
