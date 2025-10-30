@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.5.6
+// @version      1.6.0
 // @description  树状分支 + 预览 + 一键跳转；支持隐藏与悬浮按钮恢复；快捷键 Alt+T；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
@@ -13,8 +13,10 @@
 (() => {
   "use strict";
 
-  /** ================= 配置 ================= **/
-  const CONFIG = Object.freeze({
+  /** *********************************************************************
+   * 配置常量
+   ********************************************************************* */
+  const Config = Object.freeze({
     PANEL_WIDTH_MIN: 500,
     PANEL_WIDTH_MAX: 500,
     PANEL_WIDTH_STEP: 1,
@@ -24,53 +26,58 @@
     PREVIEW_TAIL_CHARS: 10,
     HIGHLIGHT_MS: 1400,
     SCROLL_OFFSET: 80,
-    LS_KEY: 'gtt_prefs_v3',
+    LS_KEY: "gtt_prefs_v3",
     RENDER_CHUNK: 120,
     RENDER_IDLE_MS: 12,
     OBS_DEBOUNCE_MS: 250,
     SIG_TEXT_LEN: 200,
     SELECTORS: {
-      scrollRoot: 'main',
+      scrollRoot: "main",
       messageBlocks: [
-        '[data-message-author-role]',
-        'article:has(.markdown)',
-        'main [data-testid^="conversation-turn"]',
-        'main .group.w-full',
-        'main [data-message-id]'
-      ].join(','),
+        "[data-message-author-role]",
+        "article:has(.markdown)",
+        "main [data-testid^=\"conversation-turn\"]",
+        "main .group.w-full",
+        "main [data-message-id]"
+      ].join(","),
       messageText: [
-        '.markdown', '.prose',
-        '[data-message-author-role] .whitespace-pre-wrap',
-        '[data-message-author-role]'
-      ].join(','),
+        ".markdown", ".prose",
+        "[data-message-author-role] .whitespace-pre-wrap",
+        "[data-message-author-role]"
+      ].join(",")
     },
     ENDPOINTS: (cid) => ({
       get: [
         `/backend-api/conversation/${cid}`,
-        `/backend-api/conversation/${cid}/`,
+        `/backend-api/conversation/${cid}/`
       ]
     })
   });
 
-  /** ================= 样式 ================= **/
-  const Style = {
-    inject(css) {
-      try { GM_addStyle(css); }
-      catch (_) {
-        const style = document.createElement('style');
+  /** *********************************************************************
+   * 样式
+   ********************************************************************* */
+  const StyleManager = (() => {
+    function inject(css) {
+      try {
+        GM_addStyle(css);
+      } catch (_) {
+        const style = document.createElement("style");
         style.textContent = css;
         document.head.appendChild(style);
       }
     }
-  };
 
-  Style.inject(`
+    return { inject };
+  })();
+
+  StyleManager.inject(`
     :root{--gtt-cur:#fa8c16;}
     #gtt-panel{
       position:fixed;top:64px;right:12px;z-index:999999;
-      width:min(var(--gtt-panel-width, ${CONFIG.PANEL_WIDTH_MAX}px), calc(100vw - 24px));
-      max-width:min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px));
-      min-width:min(${CONFIG.PANEL_WIDTH_MIN}px, calc(100vw - 24px));
+      width:min(var(--gtt-panel-width, ${Config.PANEL_WIDTH_MAX}px), calc(100vw - 24px));
+      max-width:min(${Config.PANEL_WIDTH_MAX}px, calc(100vw - 24px));
+      min-width:min(${Config.PANEL_WIDTH_MIN}px, calc(100vw - 24px));
       max-height:calc(100vh - 84px);display:flex;flex-direction:column;overflow:hidden;
       border-radius:12px;border:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-bg,#fff);
       box-shadow:0 8px 28px rgba(0,0,0,.18);font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;
@@ -90,8 +97,8 @@
     #gtt-pref .gtt-pref-value{min-width:44px;text-align:right;opacity:.8}
     #gtt-pref input[type="range"]{flex:1 1 auto}
     #gtt-pref .gtt-pref-reset{border:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-bg,#fff);color:inherit;padding:2px 6px;border-radius:6px;font-size:11px;cursor:pointer}
-    #gtt-tree{overflow:auto;overflow-x:auto;padding:8px 12px 10px 18px;max-width:calc(${CONFIG.PANEL_WIDTH_MAX}px - 30px);flex:1 1 auto;min-height:0;width:100%;max-height:var(--gtt-tree-max-height,360px)}
-    .gtt-node{padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:4px;width:100%;max-width:${CONFIG.CARD_WIDTH_MAX}px;flex-shrink:0;box-sizing:border-box}
+    #gtt-tree{overflow:auto;overflow-x:auto;padding:8px 12px 10px 18px;max-width:calc(${Config.PANEL_WIDTH_MAX}px - 30px);flex:1 1 auto;min-height:0;width:100%;max-height:var(--gtt-tree-max-height,360px)}
+    .gtt-node{padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:4px;width:100%;max-width:${Config.CARD_WIDTH_MAX}px;flex-shrink:0;box-sizing:border-box}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
     .gtt-node .head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
     .gtt-node .badge{display:inline-flex;align-items:center;justify-content:center;font-size:10px;padding:1px 5px;border-radius:6px;border:1px solid var(--gtt-bd,#d0d7de);opacity:.75;min-width:18px}
@@ -100,7 +107,7 @@
     .gtt-node .pv{display:flex;flex-direction:column;gap:2px;opacity:.88;margin:0;white-space:normal;word-break:break-word}
     .gtt-node .pv-line{display:block}
     .gtt-node .pv-line-more{font-size:12px;opacity:.7}
-    .gtt-children{margin-left:${CONFIG.CARD_INDENT}px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:10px}
+    .gtt-children{margin-left:${Config.CARD_INDENT}px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:10px}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
     .gtt-node.gtt-current{background:rgba(250,140,22,.12);border-left:2px solid var(--gtt-cur,#fa8c16);padding-left:10px}
@@ -137,31 +144,33 @@
     }
   `);
 
-  /** ================= 工具 ================= **/
+  /** *********************************************************************
+   * 基础工具
+   ********************************************************************* */
   const DOM = {
     query(selector, root = document) { return root.querySelector(selector); },
-    queryAll(selector, root = document) { return Array.from(root.querySelectorAll(selector)); },
+    queryAll(selector, root = document) { return Array.from(root.querySelectorAll(selector)); }
   };
 
   const Text = {
     normalize(value) {
-      return (value || '').replace(/\u200b/g, '').replace(/\s+/g, ' ').trim();
+      return (value || "").replace(/\u200b/g, "").replace(/\s+/g, " ").trim();
     },
     normalizeForPreview(value) {
-      return (value || '').replace(/\u200b/g, '').replace(/\r\n?/g, '\n');
+      return (value || "").replace(/\u200b/g, "").replace(/\r\n?/g, "\n");
     },
     truncate(value, maxChars) {
-      if (!value) return '';
+      if (!value) return "";
       if (!Number.isFinite(maxChars) || maxChars <= 0) return value;
       const units = Array.from(value);
       if (units.length <= maxChars) return value;
-      return units.slice(0, maxChars).join('');
+      return units.slice(0, maxChars).join("");
     }
   };
 
   const Hash = {
     of(value) {
-      const input = value || '';
+      const input = value || "";
       let h = 0;
       for (let i = 0; i < input.length; i++) {
         h = ((h << 5) - h + input.charCodeAt(i)) | 0;
@@ -172,13 +181,13 @@
 
   const HTML = {
     ESCAPES: { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" },
-    escape(value = '') {
+    escape(value = "") {
       return value.replace(/[&<>'"]/g, ch => HTML.ESCAPES[ch] || ch);
     },
-    escapeAttr(value = '') {
-      return HTML.escape(value).replace(/`/g, '&#96;');
+    escapeAttr(value = "") {
+      return HTML.escape(value).replace(/`/g, "&#96;");
     },
-    formatInline(text = '') {
+    formatInline(text = "") {
       let out = HTML.escape(text);
       out = out.replace(/`([^`]+)`/g, (_m, code) => `<code>${code}</code>`);
       out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url) => `<a href="${HTML.escapeAttr(url)}" target="_blank" rel="noreferrer noopener">${label}</a>`);
@@ -197,23 +206,25 @@
   };
 
   const Markdown = {
-    renderLite(raw = '') {
-      const text = Text.normalizeForPreview(raw || '').trimEnd();
-      if (!text) return '<p>(空)</p>';
-      const lines = text.split('\n');
-      let html = '';
+    renderLite(raw = "") {
+      const text = Text.normalizeForPreview(raw || "").trimEnd();
+      if (!text) return "<p>(空)</p>";
+      const lines = text.split("\n");
+      let html = "";
       let inList = false;
       let codeBuffer = null;
-      let codeLang = '';
-      const flushList = () => { if (inList) { html += '</ul>'; inList = false; } };
+      let codeLang = "";
+
+      const flushList = () => { if (inList) { html += "</ul>"; inList = false; } };
       const flushCode = () => {
         if (!codeBuffer) return;
-        const cls = codeLang ? ` class="lang-${HTML.escapeAttr(codeLang)}"` : '';
-        const body = codeBuffer.map(HTML.escape).join('\n');
+        const cls = codeLang ? ` class="lang-${HTML.escapeAttr(codeLang)}"` : "";
+        const body = codeBuffer.map(HTML.escape).join("\n");
         html += `<pre><code${cls}>${body}</code></pre>`;
         codeBuffer = null;
-        codeLang = '';
+        codeLang = "";
       };
+
       for (const line of lines) {
         const trimmed = line.trim();
         if (/^```/.test(trimmed)) {
@@ -232,7 +243,7 @@
         }
         if (!trimmed) {
           flushList();
-          html += '<br>';
+          html += "<br>";
           continue;
         }
         const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
@@ -245,7 +256,7 @@
         const listItem = line.match(/^\s*[-*+]\s+(.*)$/);
         if (listItem) {
           if (!inList) {
-            html += '<ul>';
+            html += "<ul>";
             inList = true;
           }
           html += `<li>${HTML.formatInline(listItem[1])}</li>`;
@@ -261,22 +272,22 @@
   };
 
   const Preview = (() => {
-    const FULL_LINES = Math.max(0, Number(CONFIG.PREVIEW_FULL_LINES) || 0);
-    const TAIL_CHARS = Math.max(0, Number(CONFIG.PREVIEW_TAIL_CHARS) || 0);
+    const FULL_LINES = Math.max(0, Number(Config.PREVIEW_FULL_LINES) || 0);
+    const TAIL_CHARS = Math.max(0, Number(Config.PREVIEW_TAIL_CHARS) || 0);
 
     function sliceUnits(value, count) {
-      if (!Number.isFinite(count) || count <= 0) return '';
-      return Array.from(value || '').slice(0, count).join('');
+      if (!Number.isFinite(count) || count <= 0) return "";
+      return Array.from(value || "").slice(0, count).join("");
     }
 
     function lines(rawText) {
       const normalized = Text
-        .normalizeForPreview(rawText || '')
-        .split('\n')
+        .normalizeForPreview(rawText || "")
+        .split("\n")
         .map(segment => Text.normalize(segment))
         .filter(Boolean);
 
-      if (!normalized.length) return ['(空)'];
+      if (!normalized.length) return ["(空)"];
 
       const result = [];
       const take = FULL_LINES > 0 ? Math.min(FULL_LINES, normalized.length) : Math.min(2, normalized.length);
@@ -285,9 +296,9 @@
       }
 
       if (normalized.length > take) {
-        const rest = Text.normalize(normalized.slice(take).join(' '));
+        const rest = Text.normalize(normalized.slice(take).join(" "));
         if (rest) {
-          const snippet = TAIL_CHARS > 0 ? sliceUnits(rest, TAIL_CHARS) : '';
+          const snippet = TAIL_CHARS > 0 ? sliceUnits(rest, TAIL_CHARS) : "";
           result.push(`${snippet}...`);
         }
       }
@@ -299,7 +310,7 @@
   })();
 
   const Timing = {
-    rafIdle(fn, ms = CONFIG.RENDER_IDLE_MS) { return setTimeout(fn, ms); },
+    rafIdle(fn, ms = Config.RENDER_IDLE_MS) { return setTimeout(fn, ms); },
     debounce(fn, wait) {
       let timer;
       return (...args) => {
@@ -309,7 +320,7 @@
     }
   };
 
-  const Location = {
+  const LocationHelper = {
     getConversationId() {
       const match = location.pathname.match(/\/c\/([a-z0-9-]{10,})/i) || [];
       return match[1] || null;
@@ -318,17 +329,19 @@
 
   const Signature = {
     create(role, text) {
-      return (role || 'assistant') + '|' + Hash.of(Text.normalize(text).slice(0, CONFIG.SIG_TEXT_LEN));
+      return (role || "assistant") + "|" + Hash.of(Text.normalize(text).slice(0, Config.SIG_TEXT_LEN));
     }
   };
 
-  /** ================= 偏好 ================= **/
+  /** *********************************************************************
+   * 偏好存储
+   ********************************************************************* */
   const Prefs = (() => {
     const defaults = { hidden: false, pos: null, width: null };
 
     function load() {
       try {
-        const raw = localStorage.getItem(CONFIG.LS_KEY) || localStorage.getItem('gtt_prefs_v2');
+        const raw = localStorage.getItem(Config.LS_KEY) || localStorage.getItem("gtt_prefs_v2");
         const parsed = raw ? JSON.parse(raw) : {};
         return { ...defaults, ...parsed };
       } catch (_) {
@@ -339,7 +352,7 @@
     let state = load();
 
     function save() {
-      try { localStorage.setItem(CONFIG.LS_KEY, JSON.stringify(state)); }
+      try { localStorage.setItem(Config.LS_KEY, JSON.stringify(state)); }
       catch (_) { /* ignore */ }
     }
 
@@ -363,7 +376,9 @@
     };
   })();
 
-  /** ================= 授权 ================= **/
+  /** *********************************************************************
+   * 认证与数据获取
+   ********************************************************************* */
   const Auth = (() => {
     const origFetch = window.fetch.bind(window);
     let lastAuth = null;
@@ -377,9 +392,9 @@
         }
         const headers = init?.headers;
         if (headers instanceof Headers) {
-          return headers.get('authorization') || headers.get('Authorization');
+          return headers.get("authorization") || headers.get("Authorization");
         }
-        if (headers && typeof headers === 'object') {
+        if (headers && typeof headers === "object") {
           return headers.authorization || headers.Authorization || null;
         }
       } catch (_) {
@@ -396,7 +411,7 @@
     async function ensureAuth() {
       if (lastAuth?.Authorization) return lastAuth;
       try {
-        const res = await origFetch('/api/auth/session', { credentials: 'include' });
+        const res = await origFetch("/api/auth/session", { credentials: "include" });
         if (res.ok) {
           const data = await res.json();
           if (data?.accessToken) {
@@ -423,7 +438,7 @@
         if (authHeader) rememberAuth(authHeader);
         const response = await origFetch(...args);
         try {
-          const url = typeof input === 'string' ? input : (input?.url || '');
+          const url = typeof input === "string" ? input : (input?.url || "");
           if (/\/backend-api\/conversation\//.test(url)) {
             const clone = response.clone();
             const json = await clone.json();
@@ -441,110 +456,133 @@
     return { ensureAuth, withHeaders, patch, origFetch };
   })();
 
-  /** ================= 树状态 ================= **/
-  const TreeState = {
-    mapping: null,
-    domBySig: new Map(),
-    domById: new Map(),
-    currentBranchIds: new Set(),
-    currentBranchSigs: new Set(),
-    currentBranchLeafId: null,
-    currentBranchLeafSig: null,
-  };
+  /** *********************************************************************
+   * 树形数据状态
+   ********************************************************************* */
+  const TreeState = (() => {
+    const state = {
+      mapping: new Map(),
+      linearNodes: [],
+      domById: new Map(),
+      domBySig: new Map(),
+      currentBranchIds: new Set(),
+      currentBranchSigs: new Set(),
+      currentBranchLeafId: null,
+      currentBranchLeafSig: null,
+    };
 
-  /** ================= 模态 & 跳转 ================= **/
-  const Navigator = (() => {
-    const SCROLLABLE_VALUES = new Set(['auto', 'scroll', 'overlay']);
-
-    function findScrollContainer(el) {
-      const rootSel = CONFIG.SELECTORS?.scrollRoot;
-      if (rootSel) {
-        const root = document.querySelector(rootSel);
-        if (root && root.contains(el) && root.scrollHeight > root.clientHeight + 8) {
-          return root;
-        }
-      }
-      let cur = el?.parentElement;
-      while (cur && cur !== document.body) {
-        const style = getComputedStyle(cur);
-        if ((SCROLLABLE_VALUES.has(style.overflowY) || SCROLLABLE_VALUES.has(style.overflow)) && cur.scrollHeight > cur.clientHeight + 8) {
-          return cur;
-        }
-        cur = cur.parentElement;
-      }
-      return document.scrollingElement || document.documentElement;
+    function reset() {
+      state.mapping.clear();
+      state.linearNodes = [];
+      state.domById.clear();
+      state.domBySig.clear();
+      state.currentBranchIds.clear();
+      state.currentBranchSigs.clear();
+      state.currentBranchLeafId = null;
+      state.currentBranchLeafSig = null;
     }
 
+    function setMapping(raw) {
+      state.mapping.clear();
+      if (!raw) return;
+      if (raw instanceof Map) {
+        for (const [key, value] of raw.entries()) {
+          state.mapping.set(key, value);
+        }
+        return;
+      }
+      if (typeof raw === "object") {
+        for (const [key, value] of Object.entries(raw)) {
+          state.mapping.set(key, value);
+        }
+      }
+    }
+
+    function updateCurrentBranch({ ids, sigs, leafId, leafSig }) {
+      state.currentBranchIds = new Set(ids || []);
+      state.currentBranchSigs = new Set(sigs || []);
+      state.currentBranchLeafId = leafId || null;
+      state.currentBranchLeafSig = leafSig || null;
+    }
+
+    return {
+      state,
+      reset,
+      setMapping,
+      updateCurrentBranch,
+    };
+  })();
+
+  /** *********************************************************************
+   * 模态框 & 导航
+   ********************************************************************* */
+  const Modal = (() => {
+    function open(text, reason) {
+      const body = DOM.query("#gtt-md-body");
+      const title = DOM.query("#gtt-md-title");
+      const modal = DOM.query("#gtt-modal");
+      if (!body || !title || !modal) return;
+      body.innerHTML = Markdown.renderLite(text);
+      title.textContent = reason || "节点预览";
+      modal.style.display = "flex";
+    }
+
+    function close() {
+      const modal = DOM.query("#gtt-modal");
+      const body = DOM.query("#gtt-md-body");
+      if (modal) modal.style.display = "none";
+      if (body) body.innerHTML = "";
+    }
+
+    return { open, close };
+  })();
+
+  const Navigator = (() => {
     function scrollToEl(el) {
       if (!el) return;
-      const container = findScrollContainer(el);
-      if (container && container !== document.body && container !== document.documentElement) {
-        const rect = el.getBoundingClientRect();
-        const parentRect = container.getBoundingClientRect();
-        const offset = rect.top - parentRect.top + container.scrollTop - CONFIG.SCROLL_OFFSET;
-        container.scrollTo({ top: offset, behavior: 'smooth' });
-      } else {
-        const offset = el.getBoundingClientRect().top + window.scrollY - CONFIG.SCROLL_OFFSET;
-        window.scrollTo({ top: offset, behavior: 'smooth' });
-      }
-      el.classList.add('gtt-highlight');
-      setTimeout(() => el.classList.remove('gtt-highlight'), CONFIG.HIGHLIGHT_MS);
+      const root = DOM.query(Config.SELECTORS.scrollRoot) || document.scrollingElement || document.documentElement;
+      const rect = el.getBoundingClientRect();
+      const targetY = (root.scrollTop || window.scrollY || 0) + rect.top - Config.SCROLL_OFFSET;
+      root.scrollTo({ top: Math.max(0, targetY), behavior: "smooth" });
+      el.classList.add("gtt-highlight");
+      setTimeout(() => el.classList.remove("gtt-highlight"), Config.HIGHLIGHT_MS);
     }
 
     function locateByText(text) {
-      const snippet = Text.normalize(text).slice(0, 120);
-      if (!snippet) return null;
-      const blocks = DOM.queryAll(CONFIG.SELECTORS.messageBlocks);
-      let best = null;
-      let score = -1;
-      for (const el of blocks) {
-        const textEl = DOM.query(CONFIG.SELECTORS.messageText, el) || el;
-        const normalized = Text.normalize(textEl?.innerText || '');
-        const idx = normalized.indexOf(snippet);
-        if (idx >= 0) {
-          const sc = 3000 - idx + Math.min(120, snippet.length);
-          if (sc > score) {
-            score = sc;
-            best = el;
-          }
+      const normalized = Text.normalize(text);
+      if (!normalized) return null;
+      const selector = Config.SELECTORS.messageBlocks;
+      const blocks = DOM.queryAll(selector);
+      for (const block of blocks) {
+        const textEl = DOM.query(Config.SELECTORS.messageText, block);
+        if (!textEl) continue;
+        const blockText = Text.normalize(textEl.textContent);
+        if (!blockText) continue;
+        if (blockText.includes(normalized.slice(0, 24))) {
+          return block;
         }
       }
-      return best;
-    }
-
-    function openModal(text, reason) {
-      const body = DOM.query('#gtt-md-body');
-      const title = DOM.query('#gtt-md-title');
-      const modal = DOM.query('#gtt-modal');
-      if (!body || !title || !modal) return;
-      body.innerHTML = Markdown.renderLite(text);
-      title.textContent = reason || '节点预览（未能定位到页面元素，已为你展示文本）';
-      modal.style.display = 'flex';
-    }
-
-    function closeModal() {
-      const modal = DOM.query('#gtt-modal');
-      const body = DOM.query('#gtt-md-body');
-      if (modal) modal.style.display = 'none';
-      if (body) body.innerHTML = '';
+      return null;
     }
 
     async function jumpTo(node) {
       if (!node) return;
-      let target = TreeState.domById.get(node.id);
+      let target = TreeState.state.domById.get(node.id);
       if (target && target.isConnected) return scrollToEl(target);
       const sig = node.sig || Signature.create(node.role, node.text);
-      target = TreeState.domBySig.get(sig);
+      target = TreeState.state.domBySig.get(sig);
       if (target && target.isConnected) return scrollToEl(target);
       target = locateByText(node.text);
       if (target) return scrollToEl(target);
-      openModal(node.text || '(无文本)', '节点预览（未能定位到页面元素，已为你展示文本）');
+      Modal.open(node.text || "(无文本)", "节点预览（未能定位到页面元素，已为你展示文本）");
     }
 
-    return { jumpTo, openModal, closeModal };
+    return { jumpTo };
   })();
 
-  /** ================= 面板 ================= **/
+  /** *********************************************************************
+   * 面板
+   ********************************************************************* */
   const Panel = (() => {
     let widthRangeEl = null;
     let widthValueEl = null;
@@ -556,7 +594,7 @@
         treeHeightScheduled = false;
         cb();
       };
-      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
         window.requestAnimationFrame(runner);
       } else {
         setTimeout(runner, 16);
@@ -565,11 +603,11 @@
 
     function updateTreeHeight(immediate = false) {
       const measure = () => {
-        const tree = DOM.query('#gtt-tree');
+        const tree = DOM.query("#gtt-tree");
         if (!tree) return;
-        const nodes = Array.from(tree.querySelectorAll('.gtt-node')).filter(node => node.offsetParent);
+        const nodes = Array.from(tree.querySelectorAll(".gtt-node")).filter(node => node.offsetParent);
         if (!nodes.length) {
-          tree.style.removeProperty('--gtt-tree-max-height');
+          tree.style.removeProperty("--gtt-tree-max-height");
           return;
         }
         const take = nodes.slice(0, Math.min(3, nodes.length));
@@ -585,9 +623,9 @@
         const paddingBottom = parseFloat(treeStyle.paddingBottom) || 0;
         const height = Math.max(0, Math.ceil(total + paddingTop + paddingBottom));
         if (height > 0) {
-          tree.style.setProperty('--gtt-tree-max-height', `${height}px`);
+          tree.style.setProperty("--gtt-tree-max-height", `${height}px`);
         } else {
-          tree.style.removeProperty('--gtt-tree-max-height');
+          tree.style.removeProperty("--gtt-tree-max-height");
         }
       };
 
@@ -601,29 +639,29 @@
     }
 
     function getViewportWidthLimit() {
-      const viewportLimit = Math.max(CONFIG.PANEL_WIDTH_MIN, Math.floor(window.innerWidth - 24));
-      return Math.min(CONFIG.PANEL_WIDTH_MAX, viewportLimit);
+      const viewportLimit = Math.max(Config.PANEL_WIDTH_MIN, Math.floor(window.innerWidth - 24));
+      return Math.min(Config.PANEL_WIDTH_MAX, viewportLimit);
     }
 
     function clampWidth(value) {
       const max = getViewportWidthLimit();
       if (!Number.isFinite(value)) return max;
-      return Math.min(Math.max(CONFIG.PANEL_WIDTH_MIN, Math.round(value)), max);
+      return Math.min(Math.max(Config.PANEL_WIDTH_MIN, Math.round(value)), max);
     }
 
     function getAutoWidth() {
-      return clampWidth(CONFIG.PANEL_WIDTH_MAX);
+      return clampWidth(Config.PANEL_WIDTH_MAX);
     }
 
     function updateWidthRangeBounds() {
       if (!widthRangeEl) return;
-      widthRangeEl.min = String(CONFIG.PANEL_WIDTH_MIN);
+      widthRangeEl.min = String(Config.PANEL_WIDTH_MIN);
       widthRangeEl.max = String(getViewportWidthLimit());
     }
 
     function updateWidthDisplay(value) {
       if (widthValueEl) {
-        widthValueEl.textContent = Number.isFinite(value) ? `${clampWidth(value)}px` : '自动';
+        widthValueEl.textContent = Number.isFinite(value) ? `${clampWidth(value)}px` : "自动";
       }
       if (widthRangeEl) {
         const fallback = getAutoWidth();
@@ -632,18 +670,18 @@
       }
     }
 
-    function syncWidth(value = Prefs.get('width'), { preview = false } = {}) {
-      const panel = DOM.query('#gtt-panel');
+    function syncWidth(value = Prefs.get("width"), { preview = false } = {}) {
+      const panel = DOM.query("#gtt-panel");
       if (!panel) return null;
       updateWidthRangeBounds();
       let applied = null;
       if (Number.isFinite(value)) {
         const clamped = clampWidth(value);
-        panel.style.setProperty('--gtt-panel-width', `${clamped}px`);
+        panel.style.setProperty("--gtt-panel-width", `${clamped}px`);
         updateWidthDisplay(clamped);
         applied = clamped;
       } else {
-        panel.style.removeProperty('--gtt-panel-width');
+        if (!preview) panel.style.removeProperty("--gtt-panel-width");
         updateWidthDisplay(null);
       }
       updateTreeHeight();
@@ -652,12 +690,12 @@
 
     function setWidth(value, { silent = false } = {}) {
       if (!Number.isFinite(value)) {
-        Prefs.set('width', null, { silent });
+        Prefs.set("width", null, { silent });
         syncWidth(null);
         return null;
       }
       const clamped = clampWidth(value);
-      Prefs.set('width', clamped, { silent });
+      Prefs.set("width", clamped, { silent });
       syncWidth(clamped);
       return clamped;
     }
@@ -669,24 +707,25 @@
     function ensureResizeListener() {
       if (resizeListenerBound) return;
       resizeListenerBound = true;
-      window.addEventListener('resize', () => {
+      window.addEventListener("resize", () => {
         syncWidth();
         updateTreeHeight();
       });
     }
+
     function ensureFab() {
-      if (DOM.query('#gtt-fab')) return;
-      const fab = document.createElement('div');
-      fab.id = 'gtt-fab';
+      if (DOM.query("#gtt-fab")) return;
+      const fab = document.createElement("div");
+      fab.id = "gtt-fab";
       fab.innerHTML = `<span class="dot"></span><span class="txt">GPT Tree</span>`;
-      fab.addEventListener('click', () => setHidden(false));
+      fab.addEventListener("click", () => setHidden(false));
       document.body.appendChild(fab);
     }
 
     function ensurePanel() {
-      if (DOM.query('#gtt-panel')) return;
-      const panel = document.createElement('div');
-      panel.id = 'gtt-panel';
+      if (DOM.query("#gtt-panel")) return;
+      const panel = document.createElement("div");
+      panel.id = "gtt-panel";
       panel.innerHTML = `
         <div id="gtt-resize" title="拖拽调整宽度"></div>
         <div id="gtt-header">
@@ -700,7 +739,7 @@
             <span style="opacity:.65" id="gtt-stats"></span>
             <div class="gtt-pref-row">
               <span class="gtt-pref-title">最大宽度</span>
-              <input type="range" id="gtt-width-range" min="${CONFIG.PANEL_WIDTH_MIN}" max="${CONFIG.PANEL_WIDTH_MAX}" step="${CONFIG.PANEL_WIDTH_STEP}">
+              <input type="range" id="gtt-width-range" min="${Config.PANEL_WIDTH_MIN}" max="${Config.PANEL_WIDTH_MAX}" step="${Config.PANEL_WIDTH_STEP}">
               <span class="gtt-pref-value" id="gtt-width-value"></span>
               <button type="button" class="gtt-pref-reset" id="gtt-width-reset" title="恢复默认宽度">重置</button>
             </div>
@@ -723,200 +762,216 @@
     }
 
     function bindPanel(panel) {
-      const btnHide = DOM.query('#gtt-btn-hide', panel);
-      const btnRefresh = DOM.query('#gtt-btn-refresh', panel);
-      const btnCloseModal = DOM.query('#gtt-md-close', panel);
-      const dragHandle = DOM.query('#gtt-drag', panel);
-      const inputSearch = DOM.query('#gtt-search', panel);
-      widthRangeEl = DOM.query('#gtt-width-range', panel);
-      widthValueEl = DOM.query('#gtt-width-value', panel);
-      const widthResetBtn = DOM.query('#gtt-width-reset', panel);
-      const resizeHandle = DOM.query('#gtt-resize', panel);
+      const btnHide = DOM.query("#gtt-btn-hide", panel);
+      const btnRefresh = DOM.query("#gtt-btn-refresh", panel);
+      const btnCloseModal = DOM.query("#gtt-md-close", panel);
+      const dragHandle = DOM.query("#gtt-drag", panel);
+      const inputSearch = DOM.query("#gtt-search", panel);
+      widthRangeEl = DOM.query("#gtt-width-range", panel);
+      widthValueEl = DOM.query("#gtt-width-value", panel);
+      const widthResetBtn = DOM.query("#gtt-width-reset", panel);
+      const resizeHandle = DOM.query("#gtt-resize", panel);
 
-      if (btnHide) btnHide.addEventListener('click', () => setHidden(true));
-      if (btnRefresh) btnRefresh.addEventListener('click', () => Lifecycle.rebuild({ forceFetch: true, hard: true }));
-      if (btnCloseModal) btnCloseModal.addEventListener('click', Navigator.closeModal);
+      if (btnHide) btnHide.addEventListener("click", () => setHidden(true));
+      if (btnRefresh) btnRefresh.addEventListener("click", () => Lifecycle.rebuild({ forceFetch: true, hard: true }));
+      if (btnCloseModal) btnCloseModal.addEventListener("click", Modal.close);
 
       if (inputSearch) {
         const handleSearch = Timing.debounce((e) => {
-          const query = (typeof e === 'string' ? e : (e?.target?.value || '')).trim().toLowerCase();
-          DOM.queryAll('#gtt-tree .gtt-node').forEach(node => {
-            node.style.display = node.textContent.toLowerCase().includes(query) ? '' : 'none';
+          const query = (typeof e === "string" ? e : (e?.target?.value || "")).trim().toLowerCase();
+          DOM.queryAll("#gtt-tree .gtt-node").forEach(node => {
+            node.style.display = node.textContent.toLowerCase().includes(query) ? "" : "none";
           });
           updateTreeHeight();
         }, 120);
-        inputSearch.addEventListener('input', handleSearch);
+        inputSearch.addEventListener("input", handleSearch);
       }
 
       if (widthRangeEl) {
-        widthRangeEl.addEventListener('input', (e) => {
+        widthRangeEl.addEventListener("input", (e) => {
           const value = Number(e.target?.value);
           if (Number.isFinite(value)) syncWidth(value, { preview: true });
         });
-        widthRangeEl.addEventListener('change', (e) => {
+        widthRangeEl.addEventListener("change", (e) => {
           setWidth(Number(e.target?.value));
         });
       }
 
-      if (widthResetBtn) widthResetBtn.addEventListener('click', () => resetWidth());
+      if (widthResetBtn) widthResetBtn.addEventListener("click", () => resetWidth());
 
-      if (dragHandle) enableDrag(panel, dragHandle);
-      if (resizeHandle) enableResize(panel, resizeHandle);
-    }
-
-    function applyState(panel) {
-      setHidden(Prefs.get('hidden'), { silent: true });
-      applyPosition(panel);
-      syncWidth();
-      ensureResizeListener();
-    }
-
-    function applyPosition(panel = DOM.query('#gtt-panel')) {
-      if (!panel) return;
-      const pos = Prefs.get('pos');
-      if (pos) {
-        panel.style.left = `${pos.left}px`;
-        panel.style.top = `${pos.top}px`;
-        panel.style.right = 'auto';
-      }
-    }
-
-    function rememberPosition(panel) {
-      if (!panel) return;
-      const rect = panel.getBoundingClientRect();
-      Prefs.set('pos', { left: Math.round(rect.left), top: Math.round(rect.top) });
-    }
-
-    function enableDrag(panel, handle) {
-      let dragging = false;
-      let startX = 0;
-      let startY = 0;
-      let startLeft = 0;
-      let startTop = 0;
-
-      handle.addEventListener('mousedown', (e) => {
-        dragging = true;
-        startX = e.clientX;
-        startY = e.clientY;
-        const rect = panel.getBoundingClientRect();
-        startLeft = rect.left;
-        startTop = rect.top;
-        panel.style.right = 'auto';
-        const onMove = (ev) => {
-          if (!dragging) return;
-          const left = startLeft + (ev.clientX - startX);
-          const top = startTop + (ev.clientY - startY);
-          panel.style.left = `${Math.max(8, left)}px`;
-          panel.style.top = `${Math.max(8, top)}px`;
-        };
-        const onUp = () => {
-          dragging = false;
-          document.removeEventListener('mousemove', onMove);
-          rememberPosition(panel);
-        };
-        document.addEventListener('mousemove', onMove);
-        document.addEventListener('mouseup', onUp, { once: true });
-      });
-    }
-
-    function enableResize(panel, handle) {
-      if (!panel || !handle) return;
-      let resizing = false;
-      let startX = 0;
-      let startWidth = 0;
-      let previewWidth = null;
-      const cleanup = (onMove, onUp) => {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-        document.removeEventListener('touchmove', onMove, true);
-        document.removeEventListener('touchend', onUp, true);
-        document.removeEventListener('touchcancel', onUp, true);
-      };
-
-      const startResize = (clientX) => {
-        resizing = true;
-        startX = clientX;
-        startWidth = panel.getBoundingClientRect().width;
-        previewWidth = startWidth;
-        const prevUserSelect = document.body.style.userSelect;
-        const prevCursor = document.body.style.cursor;
-        document.body.style.userSelect = 'none';
-        document.body.style.cursor = 'ew-resize';
+      if (dragHandle) {
+        let dragging = false;
+        let startX = 0;
+        let startY = 0;
+        let startLeft = 0;
+        let startTop = 0;
 
         const handleMove = (evt) => {
-          if (!resizing) return;
-          if (evt?.cancelable) evt.preventDefault();
+          if (!dragging) return;
           const point = evt.touches ? evt.touches[0] : evt;
           if (!point) return;
-          const delta = startX - point.clientX;
-          const next = clampWidth(startWidth + delta);
-          previewWidth = next;
-          syncWidth(next, { preview: true });
+          const deltaX = point.clientX - startX;
+          const deltaY = point.clientY - startY;
+          const nextLeft = startLeft + deltaX;
+          const nextTop = startTop + deltaY;
+          panel.style.left = `${nextLeft}px`;
+          panel.style.top = `${nextTop}px`;
+          panel.style.right = "auto";
         };
 
         const handleUp = () => {
-          if (!resizing) return;
-          resizing = false;
-          cleanup(handleMove, handleUp);
-          document.body.style.userSelect = prevUserSelect;
-          document.body.style.cursor = prevCursor;
-          const stored = Prefs.get('width');
-          if (previewWidth != null && Math.abs(previewWidth - startWidth) >= 1) {
-            setWidth(previewWidth);
-          } else if (!Number.isFinite(stored)) {
-            syncWidth(null);
-          } else {
-            syncWidth(stored);
-          }
+          if (!dragging) return;
+          dragging = false;
+          document.removeEventListener("mousemove", handleMove);
+          document.removeEventListener("mouseup", handleUp);
+          document.removeEventListener("touchmove", handleMove);
+          document.removeEventListener("touchend", handleUp);
+          document.removeEventListener("touchcancel", handleUp);
+          Prefs.set("pos", { left: panel.offsetLeft, top: panel.offsetTop });
         };
 
-        document.addEventListener('mousemove', handleMove);
-        document.addEventListener('mouseup', handleUp, { once: true });
-        document.addEventListener('touchmove', handleMove, { capture: true, passive: false });
-        document.addEventListener('touchend', handleUp, { once: true, capture: true });
-        document.addEventListener('touchcancel', handleUp, { once: true, capture: true });
-      };
+        const startDrag = (evt) => {
+          dragging = true;
+          const point = evt.touches ? evt.touches[0] : evt;
+          startX = point.clientX;
+          startY = point.clientY;
+          startLeft = panel.offsetLeft;
+          startTop = panel.offsetTop;
+          document.addEventListener("mousemove", handleMove);
+          document.addEventListener("mouseup", handleUp);
+          document.addEventListener("touchmove", handleMove, { passive: false });
+          document.addEventListener("touchend", handleUp, { passive: false });
+          document.addEventListener("touchcancel", handleUp, { passive: false });
+        };
 
-      handle.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        startResize(e.clientX);
-      });
+        dragHandle.addEventListener("mousedown", (e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          startDrag(e);
+        });
+        dragHandle.addEventListener("touchstart", (e) => {
+          const touch = e.touches?.[0];
+          if (!touch) return;
+          startDrag(e);
+        }, { passive: false });
+      }
 
-      handle.addEventListener('touchstart', (e) => {
-        const touch = e.touches?.[0];
-        if (!touch) return;
-        e.preventDefault();
-        startResize(touch.clientX);
-      }, { passive: false });
+      if (resizeHandle) {
+        const cleanup = (moveListener, upListener) => {
+          document.removeEventListener("mousemove", moveListener);
+          document.removeEventListener("mouseup", upListener);
+          document.removeEventListener("touchmove", moveListener);
+          document.removeEventListener("touchend", upListener);
+          document.removeEventListener("touchcancel", upListener);
+        };
 
-      handle.addEventListener('dblclick', (e) => {
-        e.preventDefault();
-        resetWidth();
-      });
+        const startResize = (clientX) => {
+          let resizing = true;
+          let previewWidth = null;
+          const startX = clientX;
+          const startWidth = panel.getBoundingClientRect().width;
+          const prevUserSelect = document.body.style.userSelect;
+          const prevCursor = document.body.style.cursor;
+          document.body.style.userSelect = "none";
+          document.body.style.cursor = "ew-resize";
+
+          const handleMove = (evt) => {
+            if (!resizing) return;
+            if (evt?.cancelable) evt.preventDefault();
+            const point = evt.touches ? evt.touches[0] : evt;
+            if (!point) return;
+            const delta = startX - point.clientX;
+            const next = clampWidth(startWidth + delta);
+            previewWidth = next;
+            syncWidth(next, { preview: true });
+          };
+
+          const handleUp = () => {
+            if (!resizing) return;
+            resizing = false;
+            cleanup(handleMove, handleUp);
+            document.body.style.userSelect = prevUserSelect;
+            document.body.style.cursor = prevCursor;
+            const stored = Prefs.get("width");
+            if (previewWidth != null && Math.abs(previewWidth - startWidth) >= 1) {
+              setWidth(previewWidth);
+            } else if (!Number.isFinite(stored)) {
+              syncWidth(null);
+            } else {
+              syncWidth(stored);
+            }
+          };
+
+          document.addEventListener("mousemove", handleMove);
+          document.addEventListener("mouseup", handleUp, { once: true });
+          document.addEventListener("touchmove", handleMove, { capture: true, passive: false });
+          document.addEventListener("touchend", handleUp, { once: true, capture: true });
+          document.addEventListener("touchcancel", handleUp, { once: true, capture: true });
+        };
+
+        resizeHandle.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          startResize(e.clientX);
+        });
+
+        resizeHandle.addEventListener("touchstart", (e) => {
+          const touch = e.touches?.[0];
+          if (!touch) return;
+          e.preventDefault();
+          startResize(touch.clientX);
+        }, { passive: false });
+
+        resizeHandle.addEventListener("dblclick", (e) => {
+          e.preventDefault();
+          resetWidth();
+        });
+      }
+    }
+
+    function applyState(panel) {
+      const { hidden, pos, width } = Prefs.snapshot();
+      setHidden(hidden, { silent: true });
+      if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
+        panel.style.left = `${pos.left}px`;
+        panel.style.top = `${pos.top}px`;
+        panel.style.right = "auto";
+      }
+      syncWidth(width, { preview: true });
     }
 
     function setHidden(value, { silent = false } = {}) {
-      const panel = DOM.query('#gtt-panel');
-      const fab = DOM.query('#gtt-fab');
+      const panel = DOM.query("#gtt-panel");
+      const fab = DOM.query("#gtt-fab");
       if (!panel || !fab) return;
       if (value) {
-        panel.style.display = 'none';
-        fab.style.display = 'inline-flex';
+        panel.style.display = "none";
+        fab.style.display = "inline-flex";
       } else {
-        panel.style.display = 'flex';
-        fab.style.display = 'none';
+        panel.style.display = "flex";
+        fab.style.display = "none";
         updateTreeHeight();
       }
-      Prefs.set('hidden', !!value, { silent });
+      Prefs.set("hidden", !!value, { silent });
     }
 
     function updateStats(total) {
-      const el = DOM.query('#gtt-stats');
-      if (el) el.textContent = total ? `节点：${total}` : '';
+      const el = DOM.query("#gtt-stats");
+      if (el) el.textContent = total ? `节点：${total}` : "";
+    }
+
+    function applyPosition() {
+      const panel = DOM.query("#gtt-panel");
+      if (!panel) return;
+      const pos = Prefs.get("pos");
+      if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
+        panel.style.left = `${pos.left}px`;
+        panel.style.top = `${pos.top}px`;
+        panel.style.right = "auto";
+      }
     }
 
     return {
-      ensure: () => { ensureFab(); ensurePanel(); },
+      ensure: () => { ensureFab(); ensurePanel(); ensureResizeListener(); },
       ensureFab,
       ensurePanel,
       setHidden,
@@ -928,41 +983,45 @@
     };
   })();
 
-  /** ================= 分支高亮 ================= **/
+  /** *********************************************************************
+   * 分支高亮
+   ********************************************************************* */
   const BranchHighlighter = (() => {
     function clear(rootEl) {
-      const nodeEls = rootEl.querySelectorAll('.gtt-node');
-      const connectorEls = rootEl.querySelectorAll('.gtt-children');
-      nodeEls.forEach(el => el.classList.remove('gtt-current', 'gtt-current-leaf'));
-      connectorEls.forEach(el => el.classList.remove('gtt-current-line'));
+      const nodeEls = rootEl.querySelectorAll(".gtt-node");
+      const connectorEls = rootEl.querySelectorAll(".gtt-children");
+      nodeEls.forEach(el => el.classList.remove("gtt-current", "gtt-current-leaf"));
+      connectorEls.forEach(el => el.classList.remove("gtt-current-line"));
     }
 
-    function apply(rootEl = DOM.query('#gtt-tree')) {
+    function apply(rootEl = DOM.query("#gtt-tree")) {
       if (!rootEl) return;
       clear(rootEl);
-      const hasBranch = (TreeState.currentBranchIds.size || TreeState.currentBranchSigs.size);
+      const hasBranch = (TreeState.state.currentBranchIds.size || TreeState.state.currentBranchSigs.size);
       if (!hasBranch) return;
-      const nodeEls = rootEl.querySelectorAll('.gtt-node');
+      const nodeEls = rootEl.querySelectorAll(".gtt-node");
       nodeEls.forEach(el => {
         const id = el.dataset?.nodeId;
         const sig = el.dataset?.sig;
         const chainIds = Array.isArray(el._chainIds) ? el._chainIds : null;
         const chainSigs = Array.isArray(el._chainSigs) ? el._chainSigs : null;
-        const matchesId = id && TreeState.currentBranchIds.has(id);
-        const matchesSig = sig && TreeState.currentBranchSigs.has(sig);
-        const matchesChainId = chainIds ? chainIds.some(cid => TreeState.currentBranchIds.has(cid)) : false;
-        const matchesChainSig = chainSigs ? chainSigs.some(cs => TreeState.currentBranchSigs.has(cs)) : false;
+        const matchesId = id && TreeState.state.currentBranchIds.has(id);
+        const matchesSig = sig && TreeState.state.currentBranchSigs.has(sig);
+        const matchesChainId = chainIds ? chainIds.some(cid => TreeState.state.currentBranchIds.has(cid)) : false;
+        const matchesChainSig = chainSigs ? chainSigs.some(cs => TreeState.state.currentBranchSigs.has(cs)) : false;
         const isCurrent = matchesId || matchesSig || matchesChainId || matchesChainSig;
         if (!isCurrent) return;
-        el.classList.add('gtt-current');
+        el.classList.add("gtt-current");
         const isLeaf = (
-          (TreeState.currentBranchLeafId && (id === TreeState.currentBranchLeafId || (chainIds && chainIds.includes(TreeState.currentBranchLeafId)))) ||
-          (TreeState.currentBranchLeafSig && (sig === TreeState.currentBranchLeafSig || (chainSigs && chainSigs.includes(TreeState.currentBranchLeafSig))))
+          (TreeState.state.currentBranchLeafId && (id === TreeState.state.currentBranchLeafId || (chainIds && chainIds.includes(TreeState.state.currentBranchLeafId)))) ||
+          (TreeState.state.currentBranchLeafSig && (sig === TreeState.state.currentBranchLeafSig || (chainSigs && chainSigs.includes(TreeState.state.currentBranchLeafSig))))
         );
-        if (isLeaf) el.classList.add('gtt-current-leaf');
+        if (isLeaf) {
+          el.classList.add("gtt-current-leaf");
+        }
         const parent = el.parentElement;
-        if (parent?.classList?.contains('gtt-children')) {
-          parent.classList.add('gtt-current-line');
+        if (parent && parent.classList.contains("gtt-children")) {
+          parent.classList.add("gtt-current-line");
         }
       });
     }
@@ -970,22 +1029,25 @@
     return { apply };
   })();
 
-  /** ================= 构树 ================= **/
-  const Tree = (() => {
+  /** *********************************************************************
+   * 节点构建与渲染
+   ********************************************************************* */
+
+  const TreeBuilder = (() => {
     function isToolishRole(role) {
-      return role === 'tool' || role === 'system' || role === 'function';
+      return role === "tool" || role === "system" || role === "function";
     }
 
     function getRecText(rec) {
       const parts = rec?.message?.content?.parts ?? [];
-      if (Array.isArray(parts)) return parts.join('\n');
-      if (typeof parts === 'string') return parts;
-      return '';
+      if (Array.isArray(parts)) return parts.join("\n");
+      if (typeof parts === "string") return parts;
+      return "";
     }
 
     function isVisibleRec(rec) {
       if (!rec) return false;
-      const role = rec?.message?.author?.role || 'assistant';
+      const role = rec?.message?.author?.role || "assistant";
       if (isToolishRole(role)) return false;
       const text = getRecText(rec);
       return !!Text.normalize(text);
@@ -1010,7 +1072,7 @@
       for (const cid of ids) {
         const rec = mapping[cid];
         if (!rec) continue;
-        const role = rec?.message?.author?.role || 'assistant';
+        const role = rec?.message?.author?.role || "assistant";
         const text = Text.normalize(getRecText(rec));
         const sig = Signature.create(role, text);
         if (!seen.has(sig)) {
@@ -1024,7 +1086,7 @@
     function foldSameRoleChain(startId, mapping, childrenMap) {
       let cur = startId;
       let rec = mapping[cur];
-      const role = rec?.message?.author?.role || 'assistant';
+      const role = rec?.message?.author?.role || "assistant";
       let text = getRecText(rec);
       let guard = 0;
       const chainIds = [];
@@ -1039,7 +1101,7 @@
         if (kids.length !== 1) break;
         const kidId = kids[0];
         const kidRec = mapping[kidId];
-        const kidRole = kidRec?.message?.author?.role || 'assistant';
+        const kidRole = kidRec?.message?.author?.role || "assistant";
         const kidText = getRecText(kidRec);
         if (kidRole === role && kidText && text) {
           text = `${text}\n${kidText}`.trim();
@@ -1089,81 +1151,98 @@
       const nodes = [];
       for (let i = 0; i < linear.length; i++) {
         const current = linear[i];
-        if (current.role === 'user') {
+        if (current.role === "user") {
           const next = linear[i + 1];
-          const pair = { id: current.id, role: 'user', text: current.text, sig: current.sig, children: [] };
-          if (next && next.role === 'assistant') {
-            pair.children.push({ id: next.id, role: 'assistant', text: next.text, sig: next.sig, children: [] });
+          const pair = { id: current.id, role: "user", text: current.text, sig: current.sig, children: [] };
+          if (next && next.role === "assistant") {
+            pair.children.push({ id: next.id, role: "assistant", text: next.text, sig: next.sig, children: [] });
           }
           nodes.push(pair);
         } else {
-          nodes.push({ id: current.id, role: 'assistant', text: current.text, sig: current.sig, children: [] });
+          nodes.push({ id: current.id, role: "assistant", text: current.text, sig: current.sig, children: [] });
         }
       }
       return nodes;
     }
 
-    function renderTreeGradually(targetEl, treeData) {
-      targetEl.innerHTML = '';
+    function fromMapping() {
+      const mapping = Object.fromEntries(TreeState.state.mapping);
+      if (!Object.keys(mapping).length) return [];
+      return mappingToTree(mapping);
+    }
+
+    function fromLinear(linear) {
+      return linearToTree(Array.isArray(linear) ? linear : []);
+    }
+
+    return { fromMapping, fromLinear };
+  })();
+
+
+  const TreeRenderer = (() => {
+    function createItem(node) {
+      const item = document.createElement("div");
+      item.className = "gtt-node";
+      if (node.id) item.dataset.nodeId = node.id;
+      if (node.sig) item.dataset.sig = node.sig;
+      if (node.chainIds) item._chainIds = node.chainIds;
+      if (node.chainSigs) item._chainSigs = node.chainSigs;
+
+      const head = document.createElement("div");
+      head.className = "head";
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = node.role === "user" ? "U" : (node.role === "assistant" ? "A" : (node.role || "·"));
+      const title = document.createElement("span");
+      title.className = "title";
+      title.textContent = node.role === "user" ? "用户" : (node.role === "assistant" ? "Asst" : (node.role || "·"));
+      const meta = document.createElement("span");
+      meta.className = "meta";
+      meta.textContent = node.children?.length ? `×${node.children.length}` : "";
+      head.append(badge, title);
+      if (meta.textContent) head.append(meta);
+
+      const pv = document.createElement("span");
+      pv.className = "pv";
+      const pvLines = Preview.lines(node.text);
+      pvLines.forEach((line, idx) => {
+        const lineEl = document.createElement("span");
+        lineEl.className = "pv-line";
+        if (idx >= 2) lineEl.classList.add("pv-line-more");
+        lineEl.textContent = line;
+        pv.appendChild(lineEl);
+      });
+
+      item.append(head, pv);
+      item.title = `${node.id || ""}\n\n${node.text || ""}`;
+      item.addEventListener("click", () => Navigator.jumpTo(node));
+      return item;
+    }
+
+    function render(treeData = []) {
+      const treeEl = DOM.query("#gtt-tree");
+      if (!treeEl) return;
+      treeEl.innerHTML = "";
       Panel.updateTreeHeight(true);
+
+      const fragment = document.createDocumentFragment();
+      const root = document.createElement("div");
+      fragment.appendChild(root);
       const stats = { total: 0 };
-      const container = document.createDocumentFragment();
       const queue = [];
-
-      const pushList = (nodes, parent) => { for (const node of nodes) queue.push({ node, parent }); };
-
-      const createItem = (node) => {
-        const item = document.createElement('div');
-        item.className = 'gtt-node';
-        item.dataset.nodeId = node.id;
-        item.dataset.sig = node.sig;
-        item.title = `${node.id}\n\n${node.text || ''}`;
-        if (node.chainIds) item._chainIds = node.chainIds;
-        if (node.chainSigs) item._chainSigs = node.chainSigs;
-        const head = document.createElement('div');
-        head.className = 'head';
-        const badge = document.createElement('span');
-        badge.className = 'badge';
-        badge.textContent = node.role === 'user'
-          ? 'U'
-          : (node.role === 'assistant' ? 'A' : (node.role || '·'));
-        const title = document.createElement('span');
-        title.className = 'title';
-        title.textContent = node.role === 'user' ? '用户' : 'Asst';
-        const meta = document.createElement('span');
-        meta.className = 'meta';
-        meta.textContent = node.children?.length ? `×${node.children.length}` : '';
-        const pv = document.createElement('span');
-        pv.className = 'pv';
-        const pvLines = Preview.lines(node.text);
-        pvLines.forEach((line, idx) => {
-          const lineEl = document.createElement('span');
-          lineEl.className = 'pv-line';
-          if (idx === 2) lineEl.classList.add('pv-line-more');
-          lineEl.textContent = line;
-          pv.appendChild(lineEl);
-        });
-        head.append(badge, title);
-        if (meta.textContent) head.append(meta);
-        item.append(head, pv);
-        item.addEventListener('click', () => Navigator.jumpTo(node));
-        return item;
-      };
-
-      const rootDiv = document.createElement('div');
-      container.appendChild(rootDiv);
-      pushList(treeData, rootDiv);
+      const pushList = (nodes, parent) => { if (Array.isArray(nodes)) { for (const node of nodes) queue.push({ node, parent }); } };
+      pushList(treeData, root);
 
       const step = () => {
         let count = 0;
-        while (count < CONFIG.RENDER_CHUNK && queue.length) {
+        while (count < Config.RENDER_CHUNK && queue.length) {
           const { node, parent } = queue.shift();
           const item = createItem(node);
           parent.appendChild(item);
           stats.total++;
           if (node.children?.length) {
-            const kids = document.createElement('div');
-            kids.className = 'gtt-children';
+            const kids = document.createElement("div");
+            kids.className = "gtt-children";
             parent.appendChild(kids);
             pushList(node.children, kids);
           }
@@ -1172,9 +1251,9 @@
         if (queue.length) {
           Timing.rafIdle(step);
         } else {
-          targetEl.appendChild(container);
+          treeEl.appendChild(fragment);
           Panel.updateStats(stats.total);
-          BranchHighlighter.apply(targetEl);
+          BranchHighlighter.apply(treeEl);
           Panel.updateTreeHeight();
         }
       };
@@ -1182,84 +1261,99 @@
       step();
     }
 
-    function harvestLinearNodes() {
-      const blocks = DOM.queryAll(CONFIG.SELECTORS.messageBlocks);
-      const result = [];
-      const ids = new Set();
-      const sigs = new Set();
-      const domBySig = new Map();
-      const domById = new Map();
-
-      for (const el of blocks) {
-        const textEl = DOM.query(CONFIG.SELECTORS.messageText, el) || el;
-        const raw = (textEl?.innerText || '').trim();
-        const text = Text.normalize(raw);
-        if (!text) continue;
-        let role = el.getAttribute('data-message-author-role');
-        if (!role) role = el.querySelector('.markdown,.prose') ? 'assistant' : 'user';
-        const messageId = el.getAttribute('data-message-id') || el.dataset?.messageId || DOM.query('[data-message-id]', el)?.getAttribute('data-message-id') || (el.id?.startsWith('conversation-turn-') ? el.id.split('conversation-turn-')[1] : null);
-        const id = messageId ? messageId : (`lin-${Hash.of(text.slice(0, 80))}`);
-        const sig = Signature.create(role, text);
-        const record = { id, role, text, sig, _el: el };
-        result.push(record);
-        domBySig.set(sig, el);
-        ids.add(id);
-        sigs.add(sig);
-        if (messageId) domById.set(messageId, el);
-      }
-
-      TreeState.domBySig = domBySig;
-      TreeState.domById = domById;
-      TreeState.currentBranchIds = ids;
-      TreeState.currentBranchSigs = sigs;
-      if (result.length) {
-        const leaf = result[result.length - 1];
-        TreeState.currentBranchLeafId = leaf?.id || null;
-        TreeState.currentBranchLeafSig = leaf?.sig || null;
-      } else {
-        TreeState.currentBranchLeafId = null;
-        TreeState.currentBranchLeafSig = null;
-      }
-
-      BranchHighlighter.apply();
-      return result;
-    }
-
-    function buildFromMapping(mapping) {
-      const treeEl = DOM.query('#gtt-tree');
-      if (!treeEl) return;
-      const treeData = mappingToTree(mapping);
-      renderTreeGradually(treeEl, treeData);
-    }
-
-    function buildFromLinear(linear) {
-      const treeEl = DOM.query('#gtt-tree');
-      if (!treeEl) return;
-      const treeData = linearToTree(linear);
-      renderTreeGradually(treeEl, treeData);
-    }
-
-    return { harvestLinearNodes, buildFromMapping, buildFromLinear };
+    return { render };
   })();
 
-  /** ================= 数据层 ================= **/
-  const Data = (() => {
-    const fetchCtl = { token: 0 };
+  /** *********************************************************************
+   * 观察与生命周期
+   ********************************************************************* */
 
-    async function fetchMapping() {
-      const currentToken = ++fetchCtl.token;
+  const Observer = (() => {
+    let mutationObserver = null;
+    let currentConversationId = null;
+
+    function collectLinearNodes() {
+      const blocks = DOM.queryAll(Config.SELECTORS.messageBlocks);
+      const records = [];
+      const ids = new Set();
+      const sigs = new Set();
+      TreeState.state.domById.clear();
+      TreeState.state.domBySig.clear();
+
+      for (const el of blocks) {
+        const textEl = DOM.query(Config.SELECTORS.messageText, el) || el;
+        const raw = (textEl?.innerText || textEl?.textContent || "").trim();
+        const text = Text.normalize(raw);
+        if (!text) continue;
+        let role = el.getAttribute("data-message-author-role") || el.dataset?.messageAuthorRole;
+        if (!role) role = el.querySelector(".markdown,.prose") ? "assistant" : "user";
+        const messageId = el.getAttribute("data-message-id") || el.dataset?.messageId || (el.id?.startsWith("conversation-turn-") ? el.id.replace("conversation-turn-", "") : null);
+        const id = messageId || `lin-${Hash.of(text.slice(0, 80))}`;
+        const sig = Signature.create(role, text);
+        records.push({ id, role, text, sig });
+        if (messageId) TreeState.state.domById.set(messageId, el);
+        TreeState.state.domBySig.set(sig, el);
+        ids.add(id);
+        sigs.add(sig);
+      }
+
+      const leaf = records[records.length - 1];
+      TreeState.updateCurrentBranch({
+        ids,
+        sigs,
+        leafId: leaf?.id || null,
+        leafSig: leaf?.sig || null,
+      });
+      TreeState.state.linearNodes = records;
+      return records;
+    }
+
+    function observeMessages() {
+      const linear = collectLinearNodes();
+      BranchHighlighter.apply();
+      return linear;
+    }
+
+    function handleDomChange() {
+      observeMessages();
+      Lifecycle.scheduleRebuild({ reason: "dom-change" });
+    }
+
+    function bindMutation() {
+      const root = document.body;
+      if (!root) return;
+      if (mutationObserver) mutationObserver.disconnect();
+      mutationObserver = new MutationObserver(Timing.debounce(handleDomChange, Config.OBS_DEBOUNCE_MS));
+      mutationObserver.observe(root, { childList: true, subtree: true });
+    }
+
+    function ensureConversationWatcher() {
+      const cid = LocationHelper.getConversationId();
+      if (!cid || cid === currentConversationId) return;
+      currentConversationId = cid;
+      Lifecycle.rebuild({ forceFetch: true, hard: true, reason: "route-watch" });
+    }
+
+    return { observeMessages, bindMutation, ensureConversationWatcher };
+  })();
+
+  /** *********************************************************************
+   * 生命周期控制
+   ********************************************************************* */
+
+  const Lifecycle = (() => {
+    let rebuildTimer = null;
+
+    async function fetchMapping(conversationId) {
+      if (!conversationId) return null;
       await Auth.ensureAuth();
-      const cid = Location.getConversationId();
-      if (!cid) return null;
-      const { get: urls } = CONFIG.ENDPOINTS(cid);
-      for (const url of urls) {
+      const endpoints = Config.ENDPOINTS(conversationId).get;
+      for (const endpoint of endpoints) {
         try {
-          const response = await Auth.origFetch(url, { credentials: 'include', headers: Auth.withHeaders() });
-          if (currentToken !== fetchCtl.token) return null;
-          if (response.ok) {
-            const json = await response.json();
-            if (json?.mapping) return json.mapping;
-          }
+          const res = await Auth.origFetch(endpoint, { credentials: "include", headers: Auth.withHeaders() });
+          if (!res.ok) continue;
+          const json = await res.json();
+          if (json?.mapping) return json.mapping;
         } catch (_) {
           /* ignore network errors */
         }
@@ -1267,130 +1361,140 @@
       return null;
     }
 
-    return { fetchMapping };
-  })();
-
-  /** ================= 监听 ================= **/
-  const Observers = (() => {
-    const observer = new MutationObserver(Timing.debounce(() => {
-      Tree.harvestLinearNodes();
-    }, CONFIG.OBS_DEBOUNCE_MS));
-
-    function start() {
-      observer.observe(document.body, { childList: true, subtree: true });
+    function scheduleRebuild({ delay = 120, reason = "" } = {}) {
+      clearTimeout(rebuildTimer);
+      rebuildTimer = setTimeout(() => rebuild({ reason }), delay);
     }
 
-    function stop() {
-      observer.disconnect();
-    }
+    async function rebuild({ forceFetch = false, hard = false, reason = "" } = {}) {
+      try {
+        Panel.ensure();
+        Panel.applyPosition();
 
-    return { start, stop };
-  })();
+        const conversationId = LocationHelper.getConversationId();
+        if (!conversationId) return;
 
-  /** ================= 路由感知 ================= **/
-  const Router = (() => {
-    function hook(onChange) {
-      const origPush = history.pushState;
-      const origReplace = history.replaceState;
-      function fire() { window.dispatchEvent(new Event('gtt:locationchange')); }
-      history.pushState = function () {
-        const result = origPush.apply(this, arguments);
-        fire();
-        return result;
-      };
-      history.replaceState = function () {
-        const result = origReplace.apply(this, arguments);
-        fire();
-        return result;
-      };
-      window.addEventListener('popstate', fire);
-      window.addEventListener('gtt:locationchange', onChange);
-      window.addEventListener('popstate', onChange);
-    }
-
-    return { hook };
-  })();
-
-  /** ================= 键盘 ================= **/
-  const Keyboard = (() => {
-    function bind() {
-      document.addEventListener('keydown', (e) => {
-        const searchInput = DOM.query('#gtt-search');
-        if (e.key === '/' && !e.metaKey && !e.ctrlKey) {
-          e.preventDefault();
-          searchInput?.focus();
+        if (hard) {
+          TreeState.reset();
+          Panel.updateStats(0);
+          const treeEl = DOM.query("#gtt-tree");
+          if (treeEl) treeEl.innerHTML = "";
         }
-        if (e.key === 'Escape') {
-          const modal = DOM.query('#gtt-modal');
-          if (modal?.style?.display === 'flex') {
-            Navigator.closeModal();
-          } else if (searchInput) {
-            searchInput.value = '';
-            searchInput.dispatchEvent(new Event('input'));
+
+        const linearNodes = Observer.observeMessages();
+
+        if (forceFetch || !TreeState.state.mapping.size) {
+          const mapping = await fetchMapping(conversationId);
+          if (mapping) {
+            TreeState.setMapping(mapping);
           }
         }
-        if (!e.altKey) return;
-        if (e.key === 't' || e.key === 'T') {
-          e.preventDefault();
-          Panel.setHidden(!Prefs.get('hidden'));
+
+        let treeData = [];
+        if (TreeState.state.mapping.size) {
+          treeData = TreeBuilder.fromMapping();
+        } else if (linearNodes?.length) {
+          treeData = TreeBuilder.fromLinear(linearNodes);
+        } else if (TreeState.state.linearNodes.length) {
+          treeData = TreeBuilder.fromLinear(TreeState.state.linearNodes);
         }
-      });
+
+        TreeRenderer.render(treeData);
+      } catch (err) {
+        console.error("GPT Tree rebuild failed", err, reason);
+      }
+    }
+
+    return { rebuild, scheduleRebuild };
+  })();
+
+  /** *********************************************************************
+   * 路由监听
+   ********************************************************************* */
+  const Router = (() => {
+    function bind(onChange) {
+      if (typeof history === "undefined") return;
+      const origPush = history.pushState;
+      const origReplace = history.replaceState;
+      const fire = () => window.dispatchEvent(new Event("gtt:locationchange"));
+      history.pushState = function (...args) {
+        const result = origPush.apply(this, args);
+        fire();
+        return result;
+      };
+      history.replaceState = function (...args) {
+        const result = origReplace.apply(this, args);
+        fire();
+        return result;
+      };
+      window.addEventListener("popstate", fire);
+      window.addEventListener("gtt:locationchange", onChange);
     }
 
     return { bind };
   })();
 
-  /** ================= 生命周期 ================= **/
-  const Lifecycle = (() => {
-    async function rebuild(opts = {}) {
-      Panel.ensure();
-      if (opts.hard) TreeState.mapping = null;
-      const linearNodes = Tree.harvestLinearNodes();
-      if (opts.forceFetch || !TreeState.mapping) {
-        const mapping = await Data.fetchMapping();
-        if (mapping) {
-          TreeState.mapping = mapping;
-          Tree.buildFromMapping(mapping);
-          return;
+  /** *********************************************************************
+   * 键盘快捷键
+   ********************************************************************* */
+  const Keyboard = (() => {
+    function handleKeydown(e) {
+      if (e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === "KeyT") {
+        e.preventDefault();
+        const hidden = Prefs.get("hidden");
+        Panel.setHidden(!hidden);
+      }
+      if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const search = DOM.query("#gtt-search");
+        if (search) {
+          e.preventDefault();
+          search.focus();
+          search.select();
         }
       }
-      if (TreeState.mapping) {
-        Tree.buildFromMapping(TreeState.mapping);
-      } else {
-        Tree.buildFromLinear(linearNodes);
+      if (e.key === "Escape") {
+        const modal = DOM.query("#gtt-modal");
+        if (modal?.style.display === "flex") {
+          e.preventDefault();
+          Modal.close();
+          return;
+        }
+        const search = DOM.query("#gtt-search");
+        if (document.activeElement === search) {
+          e.preventDefault();
+          search.blur();
+          search.value = "";
+          search.dispatchEvent(new Event("input"));
+        }
       }
     }
 
-    function handleMappingFromFetch(mapping) {
-      if (!mapping) return;
-      TreeState.mapping = mapping;
-      Panel.ensure();
-      Tree.buildFromMapping(mapping);
+    function bind() {
+      document.addEventListener("keydown", handleKeydown, true);
     }
 
-    function boot() {
-      Panel.ensureFab();
-      Panel.ensurePanel();
-      Observers.start();
-      Router.hook(async () => {
-        await rebuild({ forceFetch: true, hard: true });
-      });
-      Keyboard.bind();
-      rebuild();
-    }
-
-    return { rebuild, handleMappingFromFetch, boot };
+    return { bind };
   })();
 
-  /** ================= 启动 ================= **/
-  Auth.patch(Lifecycle.handleMappingFromFetch);
+  /** *********************************************************************
+   * 初始化
+   ********************************************************************* */
+  function bootstrap() {
+    Panel.ensure();
+    Keyboard.bind();
+    Observer.bindMutation();
+    Router.bind(() => Lifecycle.rebuild({ forceFetch: true, hard: true, reason: "route-change" }));
+    Auth.patch((mapping) => {
+      TreeState.setMapping(mapping);
+      Lifecycle.scheduleRebuild({ reason: "fetch-patch" });
+    });
+    Lifecycle.rebuild({ forceFetch: true, hard: true, reason: "init" });
+    setInterval(() => Observer.ensureConversationWatcher(), 2000);
+  }
 
-  const readyTimer = setInterval(() => {
-    if (document.querySelector('main')) {
-      clearInterval(readyTimer);
-      Lifecycle.boot();
-    }
-  }, 300);
-
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bootstrap, { once: true });
+  } else {
+    bootstrap();
+  }
 })();
-
