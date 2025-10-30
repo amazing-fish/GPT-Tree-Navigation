@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.6.0
+// @version      1.6.1
 // @description  树状分支 + 预览 + 一键跳转；支持隐藏与悬浮按钮恢复；快捷键 Alt+T；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
@@ -18,7 +18,6 @@
     PANEL_WIDTH_MIN: 350,
     PANEL_WIDTH_MAX: 500,
     PANEL_WIDTH_DEFAULT: 400,
-    PANEL_WIDTH_STEP: 1,
     CARD_WIDTH_MAX: 400,
     CARD_INDENT: 25,
     PREVIEW_FULL_LINES: 2,
@@ -70,9 +69,7 @@
     :root{--gtt-cur:#fa8c16;}
     #gtt-panel{
       position:fixed;top:64px;right:12px;z-index:999999;
-      width:min(var(--gtt-panel-width, ${CONFIG.PANEL_WIDTH_DEFAULT}px), calc(100vw - 24px));
-      max-width:min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px));
-      min-width:min(${CONFIG.PANEL_WIDTH_MIN}px, calc(100vw - 24px));
+      width:clamp(max(0px, min(${CONFIG.PANEL_WIDTH_MIN}px, calc(100vw - 24px))), var(--gtt-panel-width, ${CONFIG.PANEL_WIDTH_DEFAULT}px), min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px)));
       max-height:calc(100vh - 84px);display:flex;flex-direction:column;overflow:hidden;
       border-radius:12px;border:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-bg,#fff);
       box-shadow:0 8px 28px rgba(0,0,0,.18);font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;
@@ -86,12 +83,12 @@
     #gtt-resize{position:absolute;top:0;left:0;width:8px;height:100%;cursor:ew-resize;display:flex;align-items:center;justify-content:center;z-index:1;touch-action:none}
     #gtt-resize::after{content:'';width:2px;height:32px;border-radius:1px;background:var(--gtt-bd,#d0d7de);opacity:.55;transition:opacity .2s ease}
     #gtt-resize:hover::after{opacity:.85}
-    #gtt-pref{display:flex;gap:10px;align-items:center;padding:0 10px 8px 18px;color:#555;flex-wrap:wrap}
-    #gtt-pref .gtt-pref-row{display:flex;align-items:center;gap:8px;flex:1 1 100%;font-size:12px}
+    #gtt-pref{display:flex;gap:10px;align-items:center;padding:0 10px 10px 18px;color:#555;flex-wrap:wrap;font-size:12px}
+    #gtt-pref .gtt-pref-row{display:flex;align-items:center;gap:8px;flex:0 0 auto}
     #gtt-pref .gtt-pref-title{white-space:nowrap;opacity:.8}
-    #gtt-pref .gtt-pref-value{min-width:44px;text-align:right;opacity:.8}
-    #gtt-pref input[type="range"]{flex:1 1 auto}
+    #gtt-pref .gtt-pref-value{min-width:48px;text-align:right;opacity:.88;font-variant-numeric:tabular-nums}
     #gtt-pref .gtt-pref-reset{border:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-bg,#fff);color:inherit;padding:2px 6px;border-radius:6px;font-size:11px;cursor:pointer}
+    #gtt-pref .gtt-pref-hint{flex:1 1 100%;opacity:.65;margin-top:2px}
     #gtt-tree{overflow:auto;overflow-x:auto;padding:8px 12px 10px 18px;max-width:calc(${CONFIG.PANEL_WIDTH_MAX}px - 30px);flex:1 1 auto;min-height:0;width:100%;max-height:var(--gtt-tree-max-height,360px)}
     .gtt-node{padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:4px;width:100%;max-width:${CONFIG.CARD_WIDTH_MAX}px;flex-shrink:0;box-sizing:border-box}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
@@ -524,7 +521,6 @@
       this.modalEl = null;
       this.modalBodyEl = null;
       this.modalTitleEl = null;
-      this.widthRangeEl = null;
       this.widthValueEl = null;
       this.searchInputEl = null;
       this.dragHandle = null;
@@ -565,11 +561,11 @@
           <div id="gtt-pref">
             <span style="opacity:.65" id="gtt-stats"></span>
             <div class="gtt-pref-row">
-              <span class="gtt-pref-title">最大宽度</span>
-              <input type="range" id="gtt-width-range" step="${CONFIG.PANEL_WIDTH_STEP}">
+              <span class="gtt-pref-title">宽度</span>
               <span class="gtt-pref-value" id="gtt-width-value"></span>
               <button type="button" class="gtt-pref-reset" id="gtt-width-reset" title="恢复默认宽度">重置</button>
             </div>
+            <div class="gtt-pref-hint">拖拽左侧手柄可调整宽度，双击手柄或点击重置恢复默认。</div>
           </div>
           <div id="gtt-tree"></div>
         </div>
@@ -590,7 +586,6 @@
       this.modalEl = DOMUtils.query("#gtt-modal", panel);
       this.modalBodyEl = DOMUtils.query("#gtt-md-body", panel);
       this.modalTitleEl = DOMUtils.query("#gtt-md-title", panel);
-      this.widthRangeEl = DOMUtils.query("#gtt-width-range", panel);
       this.widthValueEl = DOMUtils.query("#gtt-width-value", panel);
       this.searchInputEl = DOMUtils.query("#gtt-search", panel);
       this.dragHandle = DOMUtils.query("#gtt-drag", panel);
@@ -612,16 +607,6 @@
           this.updateTreeHeight();
         }, 120);
         this.searchInputEl.addEventListener("input", (e) => handleSearch(e.target?.value));
-      }
-      if (this.widthRangeEl) {
-        this.widthRangeEl.addEventListener("input", (e) => {
-          const value = Number(e.target?.value);
-          if (Number.isFinite(value)) this.syncWidth(value, { preview: true });
-        });
-        this.widthRangeEl.addEventListener("change", (e) => {
-          const value = Number(e.target?.value);
-          this.setWidth(Number.isFinite(value) ? value : null);
-        });
       }
       this.enableDrag();
       this.enableResize();
@@ -796,28 +781,36 @@
     }
     clampWidth(value) {
       const max = this.getViewportWidthLimit();
+      const min = Math.min(CONFIG.PANEL_WIDTH_MIN, max);
       if (!Number.isFinite(value)) return max;
-      return Math.min(Math.max(CONFIG.PANEL_WIDTH_MIN, Math.round(value)), max);
+      const rounded = Math.round(value);
+      return Math.min(Math.max(min, rounded), max);
     }
     getViewportWidthLimit() {
-      const viewportLimit = Math.max(CONFIG.PANEL_WIDTH_MIN, Math.floor(window.innerWidth - 24));
-      return Math.min(CONFIG.PANEL_WIDTH_MAX, viewportLimit);
-    }
-    getAutoWidth() {
-      return this.clampWidth(CONFIG.PANEL_WIDTH_DEFAULT);
+      const raw = Math.floor(window.innerWidth - 24);
+      if (!Number.isFinite(raw)) return CONFIG.PANEL_WIDTH_MAX;
+      if (raw <= 0) return 0;
+      return Math.min(CONFIG.PANEL_WIDTH_MAX, raw);
     }
     syncWidth(value = this.prefs.get("width"), { preview = false } = {}) {
       if (!this.panelEl) return null;
-      this.updateWidthRangeBounds();
+      const measure = () => {
+        if (!this.panelEl) return null;
+        const rect = this.panelEl.getBoundingClientRect();
+        const width = Math.round(rect?.width || 0);
+        return width > 0 ? width : null;
+      };
       let applied = null;
       if (Number.isFinite(value)) {
         const clamped = this.clampWidth(value);
         this.panelEl.style.setProperty("--gtt-panel-width", `${clamped}px`);
-        this.updateWidthDisplay(clamped);
+        const actual = measure();
+        this.updateWidthDisplay({ mode: "custom", target: clamped, actual });
         applied = clamped;
       } else {
         this.panelEl.style.removeProperty("--gtt-panel-width");
-        this.updateWidthDisplay(null);
+        const actual = measure();
+        this.updateWidthDisplay({ mode: "auto", target: null, actual });
       }
       if (!preview) this.updateTreeHeight();
       return applied;
@@ -836,19 +829,25 @@
     resetWidth() {
       this.setWidth(null);
     }
-    updateWidthRangeBounds() {
-      if (!this.widthRangeEl) return;
-      this.widthRangeEl.min = String(CONFIG.PANEL_WIDTH_MIN);
-      this.widthRangeEl.max = String(this.getViewportWidthLimit());
-    }
-    updateWidthDisplay(value) {
-      if (this.widthValueEl) {
-        this.widthValueEl.textContent = Number.isFinite(value) ? `${this.clampWidth(value)}px` : "自动";
+    updateWidthDisplay({ mode, target, actual }) {
+      if (!this.widthValueEl) return;
+      if (mode === "custom") {
+        const shown = Number.isFinite(actual) ? actual : target;
+        if (Number.isFinite(shown)) {
+          const constrained = Number.isFinite(actual) && Number.isFinite(target) && Math.abs(actual - target) >= 1;
+          const suffix = constrained ? "（受限）" : "";
+          this.widthValueEl.textContent = `自定义 · ${shown}px${suffix}`;
+        } else {
+          this.widthValueEl.textContent = "自定义";
+        }
+        return;
       }
-      if (this.widthRangeEl) {
-        const fallback = this.getAutoWidth();
-        const displayValue = Number.isFinite(value) ? this.clampWidth(value) : fallback;
-        this.widthRangeEl.value = String(displayValue);
+      if (mode === "auto") {
+        if (Number.isFinite(actual)) {
+          this.widthValueEl.textContent = `自动 · ${actual}px`;
+        } else {
+          this.widthValueEl.textContent = "自动";
+        }
       }
     }
     ensureResizeListener() {
