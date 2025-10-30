@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.5.2
+// @version      1.5.5
 // @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
@@ -15,11 +15,13 @@
 
   /** ================= 配置 ================= **/
   const CONFIG = Object.freeze({
-    PANEL_WIDTH_MIN: 320,
-    PANEL_WIDTH_VW: 32,
-    PANEL_WIDTH_MAX: 520,
-    PANEL_WIDTH_STEP: 10,
-    PREVIEW_MAX_CHARS: 200,
+    PANEL_WIDTH_MIN: 500,
+    PANEL_WIDTH_MAX: 500,
+    PANEL_WIDTH_STEP: 1,
+    CARD_WIDTH_MAX: 400,
+    CARD_INDENT: 25,
+    PREVIEW_FULL_LINES: 2,
+    PREVIEW_TAIL_CHARS: 10,
     HIGHLIGHT_MS: 1400,
     SCROLL_OFFSET: 80,
     LS_KEY: 'gtt_prefs_v3',
@@ -66,8 +68,9 @@
     :root{--gtt-cur:#fa8c16;}
     #gtt-panel{
       position:fixed;top:64px;right:12px;z-index:999999;
-      width:clamp(${CONFIG.PANEL_WIDTH_MIN}px, var(--gtt-panel-width, ${CONFIG.PANEL_WIDTH_VW}vw), min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px)));
-      max-width:clamp(${CONFIG.PANEL_WIDTH_MIN}px, var(--gtt-panel-width, ${CONFIG.PANEL_WIDTH_VW}vw), min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px)));
+      width:min(var(--gtt-panel-width, ${CONFIG.PANEL_WIDTH_MAX}px), calc(100vw - 24px));
+      max-width:min(${CONFIG.PANEL_WIDTH_MAX}px, calc(100vw - 24px));
+      min-width:min(${CONFIG.PANEL_WIDTH_MIN}px, calc(100vw - 24px));
       max-height:calc(100vh - 84px);display:flex;flex-direction:column;overflow:hidden;
       border-radius:12px;border:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-bg,#fff);
       box-shadow:0 8px 28px rgba(0,0,0,.18);font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;
@@ -76,7 +79,7 @@
     #gtt-header{display:flex;gap:8px;align-items:center;padding:10px 10px 10px 18px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa)}
     #gtt-header .title{font-weight:700;flex:1;cursor:move}
     #gtt-header .btn{border:1px solid var(--gtt-bd,#d0d7de);background:#fff;cursor:pointer;padding:4px 8px;border-radius:8px;font-size:12px}
-    #gtt-body{display:flex;flex-direction:column;min-height:0}
+    #gtt-body{display:flex;flex-direction:column;min-height:0;flex:1 1 auto}
     #gtt-search{margin:8px 10px 8px 18px;padding:6px 8px;border:1px solid var(--gtt-bd,#d0d7de);border-radius:8px;width:calc(100% - 28px);outline:none;background:var(--gtt-bg,#fff)}
     #gtt-resize{position:absolute;top:0;left:0;width:8px;height:100%;cursor:ew-resize;display:flex;align-items:center;justify-content:center;z-index:1;touch-action:none}
     #gtt-resize::after{content:'';width:2px;height:32px;border-radius:1px;background:var(--gtt-bd,#d0d7de);opacity:.55;transition:opacity .2s ease}
@@ -87,15 +90,17 @@
     #gtt-pref .gtt-pref-value{min-width:44px;text-align:right;opacity:.8}
     #gtt-pref input[type="range"]{flex:1 1 auto}
     #gtt-pref .gtt-pref-reset{border:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-bg,#fff);color:inherit;padding:2px 6px;border-radius:6px;font-size:11px;cursor:pointer}
-    #gtt-tree{overflow:auto;padding:8px 6px 10px 18px}
-    .gtt-node{padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:2px}
+    #gtt-tree{overflow:auto;overflow-x:auto;padding:8px 12px 10px 18px;max-width:calc(${CONFIG.PANEL_WIDTH_MAX}px - 30px);flex:1 1 auto;min-height:0;width:100%;max-height:var(--gtt-tree-max-height,360px)}
+    .gtt-node{padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:4px;width:100%;max-width:${CONFIG.CARD_WIDTH_MAX}px;flex-shrink:0;box-sizing:border-box}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
     .gtt-node .head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
     .gtt-node .badge{display:inline-flex;align-items:center;justify-content:center;font-size:10px;padding:1px 5px;border-radius:6px;border:1px solid var(--gtt-bd,#d0d7de);opacity:.75;min-width:18px}
     .gtt-node .title{font-weight:600;word-break:break-word;flex:1 1 auto}
     .gtt-node .meta{opacity:.65;font-size:10px;margin-left:auto;white-space:nowrap}
-    .gtt-node .pv{display:block;opacity:.88;margin:0;white-space:normal;word-break:break-word}
-    .gtt-children{margin-left:12px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:6px}
+    .gtt-node .pv{display:flex;flex-direction:column;gap:2px;opacity:.88;margin:0;white-space:normal;word-break:break-word}
+    .gtt-node .pv-line{display:block}
+    .gtt-node .pv-line-more{font-size:12px;opacity:.7}
+    .gtt-children{margin-left:${CONFIG.CARD_INDENT}px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:10px}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
     .gtt-node.gtt-current{background:rgba(250,140,22,.12);border-left:2px solid var(--gtt-cur,#fa8c16);padding-left:10px}
@@ -107,7 +112,7 @@
 
     #gtt-modal{position:fixed;inset:0;z-index:1000000;background:rgba(0,0,0,.42);display:none;align-items:center;justify-content:center}
     #gtt-modal .card{max-width:880px;max-height:80vh;overflow:auto;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25)}
-    #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa)}
+    #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa);position:sticky;top:0;z-index:1}
     #gtt-modal .bd{padding:12px 16px;font-size:14px;line-height:1.65;overflow-x:auto}
     #gtt-modal .bd p{margin:0 0 10px}
     #gtt-modal .bd h1,#gtt-modal .bd h2,#gtt-modal .bd h3,#gtt-modal .bd h4,#gtt-modal .bd h5,#gtt-modal .bd h6{margin:18px 0 10px;font-weight:600}
@@ -146,6 +151,13 @@
     },
     normalizeForPreview(value) {
       return (value || '').replace(/\u200b/g, '').replace(/\r\n?/g, '\n');
+    },
+    truncate(value, maxChars) {
+      if (!value) return '';
+      if (!Number.isFinite(maxChars) || maxChars <= 0) return value;
+      const units = Array.from(value);
+      if (units.length <= maxChars) return value;
+      return units.slice(0, maxChars).join('');
     }
   };
 
@@ -249,6 +261,44 @@
       return html;
     }
   };
+
+  const Preview = (() => {
+    const FULL_LINES = Math.max(0, Number(CONFIG.PREVIEW_FULL_LINES) || 0);
+    const TAIL_CHARS = Math.max(0, Number(CONFIG.PREVIEW_TAIL_CHARS) || 0);
+
+    function sliceUnits(value, count) {
+      if (!Number.isFinite(count) || count <= 0) return '';
+      return Array.from(value || '').slice(0, count).join('');
+    }
+
+    function lines(rawText) {
+      const normalized = Text
+        .normalizeForPreview(rawText || '')
+        .split('\n')
+        .map(segment => Text.normalize(segment))
+        .filter(Boolean);
+
+      if (!normalized.length) return ['(空)'];
+
+      const result = [];
+      const take = FULL_LINES > 0 ? Math.min(FULL_LINES, normalized.length) : Math.min(2, normalized.length);
+      for (let i = 0; i < take; i++) {
+        result.push(normalized[i]);
+      }
+
+      if (normalized.length > take) {
+        const rest = Text.normalize(normalized.slice(take).join(' '));
+        if (rest) {
+          const snippet = TAIL_CHARS > 0 ? sliceUnits(rest, TAIL_CHARS) : '';
+          result.push(`${snippet}...`);
+        }
+      }
+
+      return result;
+    }
+
+    return { lines };
+  })();
 
   const Timing = {
     rafIdle(fn, ms = CONFIG.RENDER_IDLE_MS) { return setTimeout(fn, ms); },
@@ -501,6 +551,56 @@
     let widthRangeEl = null;
     let widthValueEl = null;
     let resizeListenerBound = false;
+    let treeHeightScheduled = false;
+
+    function scheduleNextFrame(cb) {
+      const runner = () => {
+        treeHeightScheduled = false;
+        cb();
+      };
+      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(runner);
+      } else {
+        setTimeout(runner, 16);
+      }
+    }
+
+    function updateTreeHeight(immediate = false) {
+      const measure = () => {
+        const tree = DOM.query('#gtt-tree');
+        if (!tree) return;
+        const nodes = Array.from(tree.querySelectorAll('.gtt-node')).filter(node => node.offsetParent);
+        if (!nodes.length) {
+          tree.style.removeProperty('--gtt-tree-max-height');
+          return;
+        }
+        const take = nodes.slice(0, Math.min(3, nodes.length));
+        let total = 0;
+        for (const node of take) {
+          const style = window.getComputedStyle(node);
+          const marginTop = parseFloat(style.marginTop) || 0;
+          const marginBottom = parseFloat(style.marginBottom) || 0;
+          total += node.offsetHeight + marginTop + marginBottom;
+        }
+        const treeStyle = window.getComputedStyle(tree);
+        const paddingTop = parseFloat(treeStyle.paddingTop) || 0;
+        const paddingBottom = parseFloat(treeStyle.paddingBottom) || 0;
+        const height = Math.max(0, Math.ceil(total + paddingTop + paddingBottom));
+        if (height > 0) {
+          tree.style.setProperty('--gtt-tree-max-height', `${height}px`);
+        } else {
+          tree.style.removeProperty('--gtt-tree-max-height');
+        }
+      };
+
+      if (immediate) {
+        measure();
+        return;
+      }
+      if (treeHeightScheduled) return;
+      treeHeightScheduled = true;
+      scheduleNextFrame(measure);
+    }
 
     function getViewportWidthLimit() {
       const viewportLimit = Math.max(CONFIG.PANEL_WIDTH_MIN, Math.floor(window.innerWidth - 24));
@@ -514,8 +614,7 @@
     }
 
     function getAutoWidth() {
-      const vwWidth = Math.round(window.innerWidth * (CONFIG.PANEL_WIDTH_VW / 100));
-      return clampWidth(vwWidth);
+      return clampWidth(CONFIG.PANEL_WIDTH_MAX);
     }
 
     function updateWidthRangeBounds() {
@@ -539,15 +638,18 @@
       const panel = DOM.query('#gtt-panel');
       if (!panel) return null;
       updateWidthRangeBounds();
+      let applied = null;
       if (Number.isFinite(value)) {
         const clamped = clampWidth(value);
         panel.style.setProperty('--gtt-panel-width', `${clamped}px`);
         updateWidthDisplay(clamped);
-        return clamped;
+        applied = clamped;
+      } else {
+        panel.style.removeProperty('--gtt-panel-width');
+        updateWidthDisplay(null);
       }
-      panel.style.removeProperty('--gtt-panel-width');
-      updateWidthDisplay(null);
-      return null;
+      updateTreeHeight();
+      return applied;
     }
 
     function setWidth(value, { silent = false } = {}) {
@@ -571,6 +673,7 @@
       resizeListenerBound = true;
       window.addEventListener('resize', () => {
         syncWidth();
+        updateTreeHeight();
       });
     }
     function ensureFab() {
@@ -650,6 +753,7 @@
           DOM.queryAll('#gtt-tree .gtt-node').forEach(node => {
             node.style.display = node.textContent.toLowerCase().includes(query) ? '' : 'none';
           });
+          updateTreeHeight();
         }, 120);
         inputSearch.addEventListener('input', handleSearch);
       }
@@ -804,6 +908,7 @@
 
     function toggleCollapseAll() {
       DOM.queryAll('.gtt-children').forEach(el => el.classList.toggle('gtt-hidden'));
+      updateTreeHeight();
     }
 
     function setHidden(value, { silent = false } = {}) {
@@ -816,6 +921,7 @@
       } else {
         panel.style.display = 'flex';
         fab.style.display = 'none';
+        updateTreeHeight();
       }
       Prefs.set('hidden', !!value, { silent });
     }
@@ -826,6 +932,7 @@
       if (!panel || !btn) return;
       panel.classList.toggle('gtt-min', !!value);
       btn.textContent = value ? '还原' : '最小化';
+      if (!value) updateTreeHeight();
       Prefs.set('minimized', !!value, { silent });
     }
 
@@ -845,6 +952,7 @@
       applyPosition,
       syncWidth,
       setWidth,
+      updateTreeHeight,
     };
   })();
 
@@ -892,11 +1000,6 @@
 
   /** ================= 构树 ================= **/
   const Tree = (() => {
-    function preview(text, limit = CONFIG.PREVIEW_MAX_CHARS) {
-      const normalized = Text.normalize(text);
-      return normalized.length > limit ? `${normalized.slice(0, limit)}…` : normalized;
-    }
-
     function isToolishRole(role) {
       return role === 'tool' || role === 'system' || role === 'function';
     }
@@ -1030,6 +1133,7 @@
 
     function renderTreeGradually(targetEl, treeData) {
       targetEl.innerHTML = '';
+      Panel.updateTreeHeight(true);
       const stats = { total: 0 };
       const container = document.createDocumentFragment();
       const queue = [];
@@ -1059,7 +1163,14 @@
         meta.textContent = node.children?.length ? `×${node.children.length}` : '';
         const pv = document.createElement('span');
         pv.className = 'pv';
-        pv.textContent = preview(node.text);
+        const pvLines = Preview.lines(node.text);
+        pvLines.forEach((line, idx) => {
+          const lineEl = document.createElement('span');
+          lineEl.className = 'pv-line';
+          if (idx === 2) lineEl.classList.add('pv-line-more');
+          lineEl.textContent = line;
+          pv.appendChild(lineEl);
+        });
         head.append(badge, title);
         if (meta.textContent) head.append(meta);
         item.append(head, pv);
@@ -1092,6 +1203,7 @@
           targetEl.appendChild(container);
           Panel.updateStats(stats.total);
           BranchHighlighter.apply(targetEl);
+          Panel.updateTreeHeight();
         }
       };
 
