@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.5.2
+// @version      1.5.5
 // @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
@@ -17,9 +17,10 @@
   const CONFIG = Object.freeze({
     PANEL_WIDTH_MIN: 320,
     PANEL_WIDTH_VW: 32,
-    PANEL_WIDTH_MAX: 520,
+    PANEL_WIDTH_MAX: 500,
     PANEL_WIDTH_STEP: 10,
-    PREVIEW_MAX_CHARS: 200,
+    PREVIEW_THIRD_LINE_CHARS: 10,
+    PREVIEW_THIRD_LINE_SUFFIX: '...',
     HIGHLIGHT_MS: 1400,
     SCROLL_OFFSET: 80,
     LS_KEY: 'gtt_prefs_v3',
@@ -88,14 +89,14 @@
     #gtt-pref input[type="range"]{flex:1 1 auto}
     #gtt-pref .gtt-pref-reset{border:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-bg,#fff);color:inherit;padding:2px 6px;border-radius:6px;font-size:11px;cursor:pointer}
     #gtt-tree{overflow:auto;padding:8px 6px 10px 18px}
-    .gtt-node{padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:2px}
+    .gtt-node{padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:2px;max-width:400px;width:min(100%,400px)}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
     .gtt-node .head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
     .gtt-node .badge{display:inline-flex;align-items:center;justify-content:center;font-size:10px;padding:1px 5px;border-radius:6px;border:1px solid var(--gtt-bd,#d0d7de);opacity:.75;min-width:18px}
     .gtt-node .title{font-weight:600;word-break:break-word;flex:1 1 auto}
     .gtt-node .meta{opacity:.65;font-size:10px;margin-left:auto;white-space:nowrap}
     .gtt-node .pv{display:block;opacity:.88;margin:0;white-space:normal;word-break:break-word}
-    .gtt-children{margin-left:12px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:6px}
+    .gtt-children{margin-left:25px;border-left:1px dashed var(--gtt-bd,#d0d7de);padding-left:8px}
     .gtt-hidden{display:none!important}
     .gtt-highlight{outline:3px solid rgba(88,101,242,.65)!important;transition:outline-color .6s ease}
     .gtt-node.gtt-current{background:rgba(250,140,22,.12);border-left:2px solid var(--gtt-cur,#fa8c16);padding-left:10px}
@@ -106,9 +107,9 @@
     #gtt-panel.gtt-min #gtt-body{display:none}
 
     #gtt-modal{position:fixed;inset:0;z-index:1000000;background:rgba(0,0,0,.42);display:none;align-items:center;justify-content:center}
-    #gtt-modal .card{max-width:880px;max-height:80vh;overflow:auto;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25)}
-    #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa)}
-    #gtt-modal .bd{padding:12px 16px;font-size:14px;line-height:1.65;overflow-x:auto}
+    #gtt-modal .card{max-width:880px;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25)}
+    #gtt-modal .hd{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa);position:sticky;top:0;z-index:1}
+    #gtt-modal .bd{padding:12px 16px;font-size:14px;line-height:1.65;overflow:auto;flex:1 1 auto}
     #gtt-modal .bd p{margin:0 0 10px}
     #gtt-modal .bd h1,#gtt-modal .bd h2,#gtt-modal .bd h3,#gtt-modal .bd h4,#gtt-modal .bd h5,#gtt-modal .bd h6{margin:18px 0 10px;font-weight:600}
     #gtt-modal .bd pre{background:rgba(99,110,123,.08);padding:10px 12px;border-radius:8px;margin:12px 0;font-family:SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:13px;line-height:1.55;white-space:pre;overflow:auto}
@@ -892,9 +893,28 @@
 
   /** ================= 构树 ================= **/
   const Tree = (() => {
-    function preview(text, limit = CONFIG.PREVIEW_MAX_CHARS) {
-      const normalized = Text.normalize(text);
-      return normalized.length > limit ? `${normalized.slice(0, limit)}…` : normalized;
+    function preview(text) {
+      const normalized = Text.normalizeForPreview(text || '').trim();
+      if (!normalized) return '(空)';
+      const segments = normalized.split(/\n+/).map(line => Text.normalize(line)).filter(Boolean);
+      if (!segments.length) return '(空)';
+      if (segments.length === 1) {
+        return HTML.escape(segments[0]);
+      }
+      const lines = [];
+      lines.push(segments[0]);
+      if (segments.length >= 2) {
+        lines.push(segments[1]);
+      }
+      if (segments.length > 2) {
+        const remainder = Text.normalize(segments.slice(2).join(' '));
+        if (remainder) {
+          const chars = Array.from(remainder);
+          const snippet = chars.slice(0, CONFIG.PREVIEW_THIRD_LINE_CHARS).join('');
+          lines.push(`${snippet}${CONFIG.PREVIEW_THIRD_LINE_SUFFIX}`);
+        }
+      }
+      return lines.map(line => HTML.escape(line)).join('<br>');
     }
 
     function isToolishRole(role) {
@@ -1059,7 +1079,7 @@
         meta.textContent = node.children?.length ? `×${node.children.length}` : '';
         const pv = document.createElement('span');
         pv.className = 'pv';
-        pv.textContent = preview(node.text);
+        pv.innerHTML = preview(node.text);
         head.append(badge, title);
         if (meta.textContent) head.append(meta);
         item.append(head, pv);
