@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GPT Branch Tree Navigator (Preview + Jump)
 // @namespace    jiaoling.tools.gpt.tree
-// @version      1.5.5
-// @description  树状分支 + 预览 + 一键跳转；支持最小化/隐藏与悬浮按钮恢复；快捷键 Alt+T / Alt+M；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
+// @version      1.5.6
+// @description  树状分支 + 预览 + 一键跳转；支持隐藏与悬浮按钮恢复；快捷键 Alt+T；/ 聚焦搜索、Esc 关闭；拖拽移动面板；渐进式渲染；Markdown 预览；防抖监听；修复：当前分支已渲染却被误判为“未在该分支”。
 // @author       Jiaoling
 // @match        https://chat.openai.com/*
 // @match        https://chatgpt.com/*
@@ -107,8 +107,6 @@
     .gtt-node.gtt-current .badge{border-color:var(--gtt-cur,#fa8c16);color:var(--gtt-cur,#fa8c16);opacity:1}
     .gtt-node.gtt-current-leaf{box-shadow:0 0 0 2px rgba(250,140,22,.24) inset}
     .gtt-children.gtt-current-line{border-left:2px dashed var(--gtt-cur,#fa8c16)}
-
-    #gtt-panel.gtt-min #gtt-body{display:none}
 
     #gtt-modal{position:fixed;inset:0;z-index:1000000;background:rgba(0,0,0,.42);display:none;align-items:center;justify-content:center}
     #gtt-modal .card{max-width:880px;max-height:80vh;overflow:auto;background:var(--gtt-bg,#fff);border:1px solid var(--gtt-bd,#d0d7de);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.25)}
@@ -326,7 +324,7 @@
 
   /** ================= 偏好 ================= **/
   const Prefs = (() => {
-    const defaults = { minimized: false, hidden: false, pos: null, width: null };
+    const defaults = { hidden: false, pos: null, width: null };
 
     function load() {
       try {
@@ -693,9 +691,7 @@
         <div id="gtt-resize" title="拖拽调整宽度"></div>
         <div id="gtt-header">
           <div class="title" id="gtt-drag">GPT Tree</div>
-          <button class="btn" id="gtt-btn-min" title="最小化/还原（Alt+M）">最小化</button>
           <button class="btn" id="gtt-btn-refresh">刷新</button>
-          <button class="btn" id="gtt-btn-collapse">折叠</button>
           <button class="btn" id="gtt-btn-hide" title="隐藏（Alt+T）">隐藏</button>
         </div>
         <div id="gtt-body">
@@ -727,12 +723,9 @@
     }
 
     function bindPanel(panel) {
-      const btnMin = DOM.query('#gtt-btn-min', panel);
       const btnHide = DOM.query('#gtt-btn-hide', panel);
       const btnRefresh = DOM.query('#gtt-btn-refresh', panel);
-      const btnCollapse = DOM.query('#gtt-btn-collapse', panel);
       const btnCloseModal = DOM.query('#gtt-md-close', panel);
-      const header = DOM.query('#gtt-header', panel);
       const dragHandle = DOM.query('#gtt-drag', panel);
       const inputSearch = DOM.query('#gtt-search', panel);
       widthRangeEl = DOM.query('#gtt-width-range', panel);
@@ -740,12 +733,9 @@
       const widthResetBtn = DOM.query('#gtt-width-reset', panel);
       const resizeHandle = DOM.query('#gtt-resize', panel);
 
-      if (btnMin) btnMin.addEventListener('click', () => setMinimized(!Prefs.get('minimized')));
       if (btnHide) btnHide.addEventListener('click', () => setHidden(true));
       if (btnRefresh) btnRefresh.addEventListener('click', () => Lifecycle.rebuild({ forceFetch: true, hard: true }));
-      if (btnCollapse) btnCollapse.addEventListener('click', toggleCollapseAll);
       if (btnCloseModal) btnCloseModal.addEventListener('click', Navigator.closeModal);
-      if (header) header.addEventListener('dblclick', () => setMinimized(!Prefs.get('minimized')));
 
       if (inputSearch) {
         const handleSearch = Timing.debounce((e) => {
@@ -775,7 +765,6 @@
     }
 
     function applyState(panel) {
-      setMinimized(Prefs.get('minimized'), { silent: true });
       setHidden(Prefs.get('hidden'), { silent: true });
       applyPosition(panel);
       syncWidth();
@@ -906,11 +895,6 @@
       });
     }
 
-    function toggleCollapseAll() {
-      DOM.queryAll('.gtt-children').forEach(el => el.classList.toggle('gtt-hidden'));
-      updateTreeHeight();
-    }
-
     function setHidden(value, { silent = false } = {}) {
       const panel = DOM.query('#gtt-panel');
       const fab = DOM.query('#gtt-fab');
@@ -926,16 +910,6 @@
       Prefs.set('hidden', !!value, { silent });
     }
 
-    function setMinimized(value, { silent = false } = {}) {
-      const panel = DOM.query('#gtt-panel');
-      const btn = DOM.query('#gtt-btn-min');
-      if (!panel || !btn) return;
-      panel.classList.toggle('gtt-min', !!value);
-      btn.textContent = value ? '还原' : '最小化';
-      if (!value) updateTreeHeight();
-      Prefs.set('minimized', !!value, { silent });
-    }
-
     function updateStats(total) {
       const el = DOM.query('#gtt-stats');
       if (el) el.textContent = total ? `节点：${total}` : '';
@@ -946,8 +920,6 @@
       ensureFab,
       ensurePanel,
       setHidden,
-      setMinimized,
-      toggleCollapseAll,
       updateStats,
       applyPosition,
       syncWidth,
@@ -1361,10 +1333,6 @@
         if (e.key === 't' || e.key === 'T') {
           e.preventDefault();
           Panel.setHidden(!Prefs.get('hidden'));
-        }
-        if (e.key === 'm' || e.key === 'M') {
-          e.preventDefault();
-          Panel.setMinimized(!Prefs.get('minimized'));
         }
       });
     }
