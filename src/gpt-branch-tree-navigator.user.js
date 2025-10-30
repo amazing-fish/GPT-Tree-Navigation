@@ -75,7 +75,7 @@
     #gtt-header{display:flex;gap:8px;align-items:center;padding:10px 10px 10px 18px;border-bottom:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-hd,#f6f8fa)}
     #gtt-header .title{font-weight:700;flex:1;cursor:move}
     #gtt-header .btn{border:1px solid var(--gtt-bd,#d0d7de);background:#fff;cursor:pointer;padding:4px 8px;border-radius:8px;font-size:12px}
-    #gtt-body{display:flex;flex-direction:column;min-height:0}
+    #gtt-body{display:flex;flex-direction:column;min-height:0;flex:1 1 auto}
     #gtt-search{margin:8px 10px 8px 18px;padding:6px 8px;border:1px solid var(--gtt-bd,#d0d7de);border-radius:8px;width:calc(100% - 28px);outline:none;background:var(--gtt-bg,#fff)}
     #gtt-resize{position:absolute;top:0;left:0;width:8px;height:100%;cursor:ew-resize;display:flex;align-items:center;justify-content:center;z-index:1;touch-action:none}
     #gtt-resize::after{content:'';width:2px;height:32px;border-radius:1px;background:var(--gtt-bd,#d0d7de);opacity:.55;transition:opacity .2s ease}
@@ -86,8 +86,8 @@
     #gtt-pref .gtt-pref-value{min-width:44px;text-align:right;opacity:.8}
     #gtt-pref input[type="range"]{flex:1 1 auto}
     #gtt-pref .gtt-pref-reset{border:1px solid var(--gtt-bd,#d0d7de);background:var(--gtt-bg,#fff);color:inherit;padding:2px 6px;border-radius:6px;font-size:11px;cursor:pointer}
-    #gtt-tree{overflow:auto;overflow-x:auto;padding:8px 12px 10px 18px;max-width:calc(${CONFIG.PANEL_WIDTH_MAX}px - 30px)}
-    .gtt-node{padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:4px;width:min(100%,400px);max-width:400px}
+    #gtt-tree{overflow:auto;overflow-x:auto;padding:8px 12px 10px 18px;max-width:calc(${CONFIG.PANEL_WIDTH_MAX}px - 30px);flex:1 1 auto;min-height:0;width:100%;max-height:var(--gtt-tree-max-height,360px)}
+    .gtt-node{padding:6px 8px;border-radius:8px;margin:2px 0;cursor:pointer;position:relative;display:flex;flex-direction:column;gap:4px;width:min(100%,400px);max-width:400px;flex-shrink:0}
     .gtt-node:hover{background:rgba(127,127,255,.08)}
     .gtt-node .head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
     .gtt-node .badge{display:inline-flex;align-items:center;justify-content:center;font-size:10px;padding:1px 5px;border-radius:6px;border:1px solid var(--gtt-bd,#d0d7de);opacity:.75;min-width:18px}
@@ -147,6 +147,13 @@
     },
     normalizeForPreview(value) {
       return (value || '').replace(/\u200b/g, '').replace(/\r\n?/g, '\n');
+    },
+    truncate(value, maxChars) {
+      if (!value) return '';
+      if (!Number.isFinite(maxChars) || maxChars <= 0) return value;
+      const units = Array.from(value);
+      if (units.length <= maxChars) return value;
+      return units.slice(0, maxChars).join('');
     }
   };
 
@@ -502,6 +509,56 @@
     let widthRangeEl = null;
     let widthValueEl = null;
     let resizeListenerBound = false;
+    let treeHeightScheduled = false;
+
+    function scheduleNextFrame(cb) {
+      const runner = () => {
+        treeHeightScheduled = false;
+        cb();
+      };
+      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(runner);
+      } else {
+        setTimeout(runner, 16);
+      }
+    }
+
+    function updateTreeHeight(immediate = false) {
+      const measure = () => {
+        const tree = DOM.query('#gtt-tree');
+        if (!tree) return;
+        const nodes = Array.from(tree.querySelectorAll('.gtt-node')).filter(node => node.offsetParent);
+        if (!nodes.length) {
+          tree.style.removeProperty('--gtt-tree-max-height');
+          return;
+        }
+        const take = nodes.slice(0, Math.min(3, nodes.length));
+        let total = 0;
+        for (const node of take) {
+          const style = window.getComputedStyle(node);
+          const marginTop = parseFloat(style.marginTop) || 0;
+          const marginBottom = parseFloat(style.marginBottom) || 0;
+          total += node.offsetHeight + marginTop + marginBottom;
+        }
+        const treeStyle = window.getComputedStyle(tree);
+        const paddingTop = parseFloat(treeStyle.paddingTop) || 0;
+        const paddingBottom = parseFloat(treeStyle.paddingBottom) || 0;
+        const height = Math.max(0, Math.ceil(total + paddingTop + paddingBottom));
+        if (height > 0) {
+          tree.style.setProperty('--gtt-tree-max-height', `${height}px`);
+        } else {
+          tree.style.removeProperty('--gtt-tree-max-height');
+        }
+      };
+
+      if (immediate) {
+        measure();
+        return;
+      }
+      if (treeHeightScheduled) return;
+      treeHeightScheduled = true;
+      scheduleNextFrame(measure);
+    }
 
     function getViewportWidthLimit() {
       const viewportLimit = Math.max(CONFIG.PANEL_WIDTH_MIN, Math.floor(window.innerWidth - 24));
@@ -539,15 +596,18 @@
       const panel = DOM.query('#gtt-panel');
       if (!panel) return null;
       updateWidthRangeBounds();
+      let applied = null;
       if (Number.isFinite(value)) {
         const clamped = clampWidth(value);
         panel.style.setProperty('--gtt-panel-width', `${clamped}px`);
         updateWidthDisplay(clamped);
-        return clamped;
+        applied = clamped;
+      } else {
+        panel.style.removeProperty('--gtt-panel-width');
+        updateWidthDisplay(null);
       }
-      panel.style.removeProperty('--gtt-panel-width');
-      updateWidthDisplay(null);
-      return null;
+      updateTreeHeight();
+      return applied;
     }
 
     function setWidth(value, { silent = false } = {}) {
@@ -571,6 +631,7 @@
       resizeListenerBound = true;
       window.addEventListener('resize', () => {
         syncWidth();
+        updateTreeHeight();
       });
     }
     function ensureFab() {
@@ -650,6 +711,7 @@
           DOM.queryAll('#gtt-tree .gtt-node').forEach(node => {
             node.style.display = node.textContent.toLowerCase().includes(query) ? '' : 'none';
           });
+          updateTreeHeight();
         }, 120);
         inputSearch.addEventListener('input', handleSearch);
       }
@@ -804,6 +866,7 @@
 
     function toggleCollapseAll() {
       DOM.queryAll('.gtt-children').forEach(el => el.classList.toggle('gtt-hidden'));
+      updateTreeHeight();
     }
 
     function setHidden(value, { silent = false } = {}) {
@@ -816,6 +879,7 @@
       } else {
         panel.style.display = 'flex';
         fab.style.display = 'none';
+        updateTreeHeight();
       }
       Prefs.set('hidden', !!value, { silent });
     }
@@ -826,6 +890,7 @@
       if (!panel || !btn) return;
       panel.classList.toggle('gtt-min', !!value);
       btn.textContent = value ? '还原' : '最小化';
+      if (!value) updateTreeHeight();
       Prefs.set('minimized', !!value, { silent });
     }
 
@@ -845,6 +910,7 @@
       applyPosition,
       syncWidth,
       setWidth,
+      updateTreeHeight,
     };
   })();
 
@@ -893,15 +959,21 @@
   /** ================= 构树 ================= **/
   const Tree = (() => {
     function previewLines(text, limit = CONFIG.PREVIEW_MAX_CHARS) {
-      const normalized = Text.normalizeForPreview(text || '').split('\n')
-        .map(line => Text.normalize(line).slice(0, limit))
-        .filter(line => !!line);
-      if (!normalized.length) return ['(空)'];
-      const result = normalized.slice(0, 2);
-      if (normalized.length > 2) {
-        const rest = Text.normalize(normalized.slice(2).join(' '));
+      const normalizedLines = Text.normalizeForPreview(text || '')
+        .split('\n')
+        .map(line => Text.normalize(line))
+        .filter(Boolean);
+      if (!normalizedLines.length) return ['(空)'];
+      const result = [];
+      const takeCount = Math.min(2, normalizedLines.length);
+      for (let i = 0; i < takeCount; i++) {
+        const line = normalizedLines[i];
+        result.push(Text.truncate(line, limit));
+      }
+      if (normalizedLines.length > 2) {
+        const rest = Text.normalize(normalizedLines.slice(2).join(' '));
         if (rest) {
-          const snippet = rest.slice(0, 10);
+          const snippet = Text.truncate(rest, 10);
           result.push(`${snippet}...`);
         }
       }
@@ -1041,6 +1113,7 @@
 
     function renderTreeGradually(targetEl, treeData) {
       targetEl.innerHTML = '';
+      Panel.updateTreeHeight(true);
       const stats = { total: 0 };
       const container = document.createDocumentFragment();
       const queue = [];
@@ -1110,6 +1183,7 @@
           targetEl.appendChild(container);
           Panel.updateStats(stats.total);
           BranchHighlighter.apply(targetEl);
+          Panel.updateTreeHeight();
         }
       };
 
